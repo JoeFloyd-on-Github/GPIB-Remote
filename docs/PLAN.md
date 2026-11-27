@@ -39,7 +39,8 @@ Python 3.4 cannot run modern asyncio code (`async`/`await` arrived in 3.5) or cu
   (`pip download --no-binary :all:` or pure-Python wheels), copied to the Pi and installed from
   local files (`pip install --no-index --find-links`). Candidates: `PyYAML` (pure mode) and a pure-Python
   HTTP/WebSocket stack (e.g. `aiohttp` with `AIOHTTP_NO_EXTENSIONS=1`), or a small stdlib-only
-  HTTP + WebSocket implementation on asyncio. **[decide in phase 0 after a build test]**
+  HTTP + WebSocket implementation on asyncio. **Decided in phase 3: the stdlib-only implementation**
+  (`server/gpibremote/web.py`): no compiled or extra packages on the Pi, and no `ssl` dependency.
 
 ### 2.3 Development environment
 - Develop here on Windows (or any Linux box) against a **simulated GPIB backend**. Simulated
@@ -295,7 +296,6 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
 - Phase 0: **done 2026-11-27.** Python 3.11.18 (no ssl) in `/opt/gpibremote`; ctypes linux-gpib
   backend; simulator; bus worker; JSON Lines server with raw operations (`docs/protocol.md`);
   minimal `gpibctl`; offline package install; systemd service verified across a reboot.
-  The HTTP/WebSocket stack choice (2.2) is still open; it's needed in phase 3.
 - Phase 1: **done 2026-11-27.**
   Type format (`docs/device-type-format.md`) with validator; types for the E3631A (verified on the
   bench), 6632A and 3457A (simulator only, `verified: false`), generic SCPI and raw; git-versioned
@@ -313,6 +313,20 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
   off). Differences from 6.1: `set` needs no lock while nobody holds one (the phase-1 lock rules),
   so it doesn't take one; raw is `query 5 "*IDN?"`; `scan` comes with the safe bus scan (phase 5)
   and `trace` with phase 4.
+- Phase 3: **done 2026-11-27.** HTTP and WebSocket on port 8080 from the standard library
+  (`web.py`): static files from `web/`, and `/ws` carrying the port-9000 messages through the same
+  dispatcher, so the browser can do everything the CLI can. `/ws` refuses pages from other origins
+  (cross-site WebSocket hijacking); `web.allowed_origins` adds exceptions. Web client in plain
+  JavaScript modules (no build step): instrument list with status and lock icons; instrument page
+  with controls and readouts grouped by the type's menu (one card per channel), ON/OFF switches,
+  option lists, number entry with ranges and arrow-key stepping, actions with confirmation, the
+  lock bar (take, release, take over with a reason), automatic re-read of unknown settings, and
+  resync after a reconnect; live charts (one per unit, crosshair tooltip, table view, CSV); instance
+  editor with history; type browser and YAML editor (validate, save as a new version); raw GPIB
+  console; server page with clients and locks. Light and dark themes. 32 tests on PC and Pi.
+  Checked in Chrome against the E3631A on the Pi (settings, output, tracking, control lock).
+  Not done from 6.2 (later phases): front panels, softkeys and trace displays (4, 5), bus scan (5).
+  Chart history lives in the page only, so it starts empty after a reload.
 
 ## 10. Decisions and open questions
 

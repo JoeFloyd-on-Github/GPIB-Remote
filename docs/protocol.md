@@ -1,8 +1,14 @@
 # GPIB-Remote protocol (version 1)
 
 Transport: plain TCP port 9000 (no TLS; LAN or VPN only). Each message is one JSON object on one
-line, UTF-8, terminated by `\n`. Phase 3 adds the same messages over a plain `ws://` WebSocket.
+line, UTF-8, terminated by `\n`.
 You can try it with `nc 192.168.1.157 9000`.
+
+The same messages also travel over a plain WebSocket at `ws://192.168.1.157:8080/ws`
+(RFC 6455, version 13), one JSON object per text message; binary messages are refused. A
+browser's request is refused unless its `Origin` is the server itself or listed in
+`web.allowed_origins`; clients that send no `Origin` are accepted. Port 8080 also serves the
+web client's files (GET/HEAD only). Requests on one WebSocket are answered in order, as on TCP.
 
 ## Requests, responses, events
 
@@ -16,6 +22,7 @@ You can try it with `nc 192.168.1.157 9000`.
 - `id` is chosen by the client and echoed back. Requests on one connection are answered in order.
   Events (no `id`) can arrive at any time between responses.
 - Start with `hello` so your name appears in locks, history and the audit log (not authentication).
+  If `host` is empty, the server uses the client's IP address.
 - Error codes: `bad_json`, `bad_request`, `unknown_op`, `not_found`, `invalid` (with `errors`, a
   list of problems), `conflict`, `rejected` (value out of range or wrong kind), `locked` (with the
   holder in `details`), `not_locked`, `device_error` (the instrument's error queue reported one),
@@ -45,7 +52,7 @@ the holder disconnects, or after the server's idle timeout (default 15 min). `de
 |---|---|---|
 | `hello` | `client`, `user`, `host` | `server`, `version`, `protocol`, `host`, `session` |
 | `ping` | | `t` |
-| `server.info` | | `version`, `protocol`, `uptime`, `boards`, `sessions`, `data_push` |
+| `server.info` | | `version`, `protocol`, `uptime`, `boards`, `sessions` (`id`, `who`, `peer`, `client`, `transport` `tcp`/`ws`) |
 
 ### Types
 | op | Parameters | Result |

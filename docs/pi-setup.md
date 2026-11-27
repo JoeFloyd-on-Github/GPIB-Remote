@@ -56,6 +56,9 @@ Verified after a reboot: `/dev/gpib0` appears, and `pi` (no sudo) can query `*ID
     - system user `gpibremote` (group `gpib`), app copied to `/opt/gpibremote/app`,
       venv in `/opt/gpibremote/venv`, data dir `/var/lib/gpibremote` (phase 1);
     - `gpibremote.service` enabled; it waits up to 30 s for `/dev/gpib0`, then listens on TCP 9000.
+    - Since phase 3 it also serves the web client on HTTP port 8080 (`web:` in
+      `/etc/gpibremote/server.yaml`; the defaults apply when that section is missing):
+      open `http://192.168.1.157:8080/`. Plain HTTP and WebSocket, no TLS: LAN or VPN only.
     - Logs, including the audit log: `journalctl -u gpibremote`.
 
 Verified: `*IDN?` from the PC through the service, and again after a reboot with no manual steps.

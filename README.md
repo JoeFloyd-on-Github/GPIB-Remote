@@ -7,15 +7,17 @@ Plain TCP (no TLS): for LAN or VPN use only.
 
 - [docs/PLAN.md](docs/PLAN.md): design and implementation plan
 - [docs/pi-setup.md](docs/pi-setup.md): how the Pi, linux-gpib and the server runtime were set up
-- [docs/protocol.md](docs/protocol.md): the JSON Lines protocol on port 9000
+- [docs/protocol.md](docs/protocol.md): the JSON protocol (TCP port 9000, WebSocket on 8080)
 
-## Status: phase 2 (CLI)
+## Status: phase 3 (web client)
 
 The server runs on the Pi as a systemd service on TCP port 9000. It holds versioned device
 types (YAML) and device instances, controls instruments through their type (settings with
 limits, readouts polled for subscribers, actions), gives one client at a time a control lock,
 and pushes events to clients. Raw GPIB access is still available. The `gpibctl` CLI does all of this from
-Windows, Linux or the Pi, including a menu mode and an interactive shell. The web client (phase 3) comes next.
+Windows, Linux or the Pi, including a menu mode and an interactive shell. The web client at
+**http://192.168.1.157:8080/** does the same from a browser, with live charts of the readings.
+Traces from scopes and analyzers (phase 4) come next.
 
 - [docs/device-type-format.md](docs/device-type-format.md): how to write a device type
 
@@ -24,6 +26,7 @@ Windows, Linux or the Pi, including a menu mode and an interactive shell. The we
 ```
 server/gpibremote/   server: backends/ (linux-gpib via ctypes, simulator), bus worker, protocol, TCP
 cli/gpibctl/         command-line client
+web/                 browser client (plain JavaScript, no build step), served on port 8080
 deploy/              Python build script, offline packages, install script, systemd unit
 devices/types/       built-in device types (YAML, one folder per type, one file per version)
 scripts/             hardware checks (test_e3631a.py)
@@ -69,7 +72,7 @@ Needs Python 3.9+, PyYAML and git. Run the tests and a server with a simulated b
 ```
 python -m venv .venv && .venv/bin/pip install pyyaml      # .venv\Scripts\pip on Windows
 python -m unittest discover -s tests
-cd server && python -m gpibremote --backend sim --data-dir ../data --port 9000
+cd server && python -m gpibremote --backend sim --data-dir ../data --port 9000   # web client on :8080
 ```
 
 ## Deploying to the Pi
