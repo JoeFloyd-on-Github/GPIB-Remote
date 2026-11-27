@@ -78,14 +78,19 @@ Python 3.4 cannot run modern asyncio code (`async`/`await` arrived in 3.5) or cu
 - **Instance runtime:** for each instance, a cache of the last known value of every control and readout
   (with timestamp), the pollers (per-readout intervals), limit checks, and the control lock.
 - **Sessions:** a connected client. Subscribes to instances and receives change/reading events.
-- **Locking:** many observers, one controller per instance. A client takes a lease (`lock`) to change
-  settings; it expires after N minutes idle or on disconnect. Admins can break locks. **[decide: needed from day one, or phase 5?]**
+- **Locking (decided: from phase 1, no access tokens):** many observers, one controller per instance.
+  A client takes a lease (`dev.lock`) before changing settings, running actions or sending raw commands
+  to that instrument; it expires after N minutes idle or on disconnect. Any client can see who holds a
+  lock and can force-break it (with a reason that is logged and sent to the holder). Clients identify
+  themselves in `hello` (user and host name) for display and the audit log; nothing is authenticated.
+  Bus-wide operations (`bus.scan`, interface clear) need every instance on that board to be unlocked or held by the caller.
 
 ## 4. Data: device types and instances
 
 All stored as YAML under a data directory that is itself a git repository (the server commits every
-change with the user's name and a message). Built-in types live in this repo under `devices/types/`
-and are copied/merged into the data dir on install.
+change with the client's name and a message). Built-in types live in this repo under `devices/types/`
+on `main` and are copied/merged into the data dir on install. The data dir is pushed to this repo
+(see 4.2).
 
 ### 4.1 Device type (example, abridged)
 `devices/types/agilent/e3631a/1.0.0.yaml`
@@ -129,8 +134,30 @@ Field details go in `docs/device-type-format.md` together with a JSON Schema use
 Constructs needed: per-channel controls with a select command; number/enum/bool/text/action kinds;
 value formatting and response parsing (number, regex, enum map, bit fields for status bytes);
 dependencies (`enabled_if`, `range` from another control); poll intervals; safety limits;
-init/shutdown sequences; error query; non-SCPI instruments (e.g. HP 3478A's terse commands) through
-the same templates.
+init/shutdown sequences; error query.
+
+The instrument list (4.4) adds requirements beyond SCPI power supplies:
+- **Pre-SCPI instruments** (3455A, 3456A, 3457A, 6632A, 5334B) use terse HP-IB program codes
+  (e.g. 6632A `VSET 5;ISET 0.1;OUT 1`, 3456A `F1R3T1`). Templates must allow any command string,
+  multi-command strings, and instruments whose state can't be queried: the server then keeps the
+  last value it set (marked `assumed`) instead of reading it back.
+- **Talk-only readings:** several of these return a reading just by being addressed to talk, with no
+  query. A readout can be `read: true` (no write) and can be triggered (`trigger: gpib_get`).
+- **Identity without `*IDN?`:** 3455A/3456A have no ID query and the older HP-IB parsers can
+  misread stray characters as program codes, so a type declares its own safe identity probe
+  (`ID?` for 3457A/6632A) or `probe: none` (identified by the user, not by the server).
+- **Status and SRQ:** serial-poll status bytes with named bits (data ready, error, overload) and
+  waiting on SRQ for slow measurements instead of polling.
+- **Termination quirks:** per-type EOS/EOI settings, timeouts and inter-command delays.
+- **Traces and waveforms** (TDS684B, TDS754C, 8713B/8714ES/8714ET, 3589A): a `trace` readout kind
+  returning arrays plus scaling, from IEEE 488.2 definite-length blocks (`#4...`), ASCII lists, or Tek
+  `CURVE?` with the `WFMPRE?` preamble; x-axis from frequency start/stop or time base.
+  Each format is a named built-in parser the type refers to.
+- **Softkey-driven front panels** (network/spectrum analyzers, scopes): the type's menu tree mirrors
+  the instrument's hardkeys/softkeys, so the CLI menu and web panel follow the manual's structure.
+
+Escape hatch: if a type needs logic the YAML can't express, it may name a small Python hook file
+stored and versioned next to it (server-side only). Used sparingly; YAML stays the source of truth.
 
 ### 4.2 Versioning
 - A type is identified by `type@version` (semver). A published version is **immutable**; edits produce a
@@ -138,7 +165,11 @@ the same templates.
 - Each file also has a content hash, so clients can cache and detect changes.
 - Instances pin a type version. The server reports when a newer compatible version exists; upgrading is an explicit step.
 - History: every change to types or instances is a git commit in the data directory (who, when, why).
-  Optionally pushed to a GitHub repo. **[decide: push the data dir to this repo, a separate repo, or keep local?]**
+- **Pushed to this repo (decided)**, on a dedicated branch `device-data`, so server commits never
+  collide with code on `main`. The Pi pushes over SSH with a deploy key that has write access to
+  this repo only (the Pi's git doesn't depend on our ssl-less Python). Pushes are batched (a few
+  seconds after the last change) and retried when the network is down; the local repo stays authoritative.
+- Promoting a user-made type to a built-in is a normal merge from `device-data` into `devices/types/` on `main`.
 
 ### 4.3 Device instance
 `data/instances/bench-psu-1.yaml`
@@ -151,20 +182,36 @@ overrides:
   limits: { P6V.voltage: [0, 5.5] }   # tighter than the instrument allows
   readouts: { v_meas: { poll: 1s } }
   labels: { P25V: 'Op-amp +V' }
-safe_state: { on_server_stop: leave, on_error: leave }   # or: output_off
+safe_state: { on_server_stop: leave, on_client_disconnect: leave }   # or: outputs_off (decided: default leave)
 notes: Rack 2, feeds test fixture A
 revision: 3
 ```
 
 ### 4.4 Built-in types (initial set)
-Only the E3631A can be verified on hardware here; the rest would be written from manuals and marked
-`verified: false` until someone tests them. **[decide: which instruments do you actually have?]**
-- Power supplies: Agilent E3631A (verified), E3632A/E3633A/E3634A, HP 6632B/66332A.
-- DMMs: HP/Agilent 34401A, Keithley 2000, HP 3478A (non-SCPI).
-- Sources/SMUs: Keithley 2400.
-- Generators: HP/Agilent 33120A.
-- Generic: "SCPI instrument" (IDN, reset, error queue, raw I/O) and "Raw GPIB device".
-- Oscilloscopes and analyzers (waveform transfer, binary blocks) later; they need more format work.
+The instruments on this bench come first. Each type is written from its programming manual and
+marked `verified: false` until it has been exercised on the real instrument. GPIB addresses are not
+known yet except the E3631A (5); they'll be set per instance.
+
+| Instrument | Kind | Command set | Notes |
+|---|---|---|---|
+| Agilent E3631A | Triple power supply | SCPI | Verified at address 5 |
+| HP 6632A | System power supply (20 V / 5 A) | HP-IB (`VSET`, `ISET`, `OUT`), `ID?` | Pre-SCPI; status via serial poll |
+| HP 3457A | 7.5-digit DMM | HP-IB (HP 3457 language), `ID?` | Pre-SCPI |
+| HP 3456A | 6.5-digit DMM | HP-IB program codes | No ID query; state not readable |
+| HP 3455A | 5.5-digit DMM | HP-IB program codes | No ID query; oldest command set |
+| HP 5334B | Universal counter | HP-IB codes, `ID` | Talk-only readings |
+| HP 8713B | RF network analyzer | SCPI | Traces |
+| HP 8714ES / 8714ET | RF network analyzers | SCPI | Traces; S-param (ES) vs T/R (ET) |
+| HP 3589A | Spectrum/network analyzer | SCPI (HP-IB) | Traces |
+| Tektronix TDS684B | Oscilloscope | Tek GPIB (SCPI-like) | Waveforms via `CURVE?` |
+| Tektronix TDS754C | Oscilloscope | Tek GPIB (SCPI-like) | Shares a TDS family base with the 684B |
+| "8519C" | **[unclear: please confirm the model]** | | Possibly HP 8591C spectrum analyzer? |
+
+Also built in: "Generic SCPI instrument" (IDN, reset, error queue, raw I/O) and "Raw GPIB device"
+(raw I/O only), so any instrument can be used before it has a type.
+
+Order: E3631A, then 6632A and 3457A (prove the pre-SCPI path), 3456A/3455A/5334B, then one
+analyzer and one scope (prove traces), then the rest of their families.
 
 ## 5. Protocol (JSON Lines, same on TCP and WebSocket)
 
@@ -174,13 +221,14 @@ Request `{"id": 7, "op": "...", ...}`; response `{"id": 7, "ok": true, "result":
 
 | Area | Operations |
 |---|---|
-| Session | `hello` (client name, protocol version, optional token), `ping` |
+| Session | `hello` (client user/host name, protocol version), `ping` |
 | Types | `types.list`, `types.get {type, version?}`, `types.put {yaml}` (validate + store new version), `types.validate`, `types.history` |
 | Instances | `instances.list`, `instances.get`, `instances.create`, `instances.update`, `instances.delete`, `instances.upgrade_type` |
 | Control | `dev.get {instance, key}`, `dev.set {instance, key, value}`, `dev.action`, `dev.state` (all cached values), `dev.lock` / `dev.unlock` |
 | Streams | `subscribe {instance, keys?}`, `unsubscribe` |
-| Raw | `raw.write`, `raw.query`, `raw.read`, `bus.clear`, `bus.serial_poll`, `bus.local` (permission-gated) |
-| Discovery | `bus.scan` (find listeners on addresses 1-30, read `*IDN?`, suggest matching types) |
+| Traces | `dev.trace {instance, key}` (one array with axis/scaling), traces also delivered as `trace` events to subscribers at their poll rate |
+| Raw | `raw.write`, `raw.query`, `raw.read`, `bus.clear`, `bus.serial_poll`, `bus.local`, `bus.trigger` (need the instance lock, or for an address with no instance, a bus lock) |
+| Discovery | `bus.scan` (find listeners on addresses 1-30 with a GPIB listener check, which sends no device commands; then, only if asked, run each candidate type's safe identity probe and suggest matches. Never sends `*IDN?` blindly, since pre-SCPI instruments may misparse it) |
 
 `docs/protocol.md` will define every message.
 
@@ -191,25 +239,29 @@ Request `{"id": 7, "op": "...", ...}`; response `{"id": 7, "ok": true, "result":
   `gpibctl watch bench-psu-1`, `gpibctl raw 5 "*IDN?"`, `gpibctl type push my_dmm.yaml`, `gpibctl scan`.
 - Menu mode: `gpibctl menu bench-psu-1` walks the type's `menu` tree; shows live readouts; prompts with
   ranges and units; confirms dangerous actions.
-- Connects to `host:9000`; config file for default host and token.
+- `gpibctl lock bench-psu-1` / `unlock`; `set` takes the lock automatically for one command if free.
+- `gpibctl trace na-1 S21 --csv out.csv` saves a trace; `watch` prints scalar readouts.
+- Connects to `host:9000`; config file for the default host.
 
 ### 6.2 Web client (served on 8080)
 - Plain JavaScript modules, no build step (editable in place, nothing to compile on the Pi).
 - Views: instrument list with live status; **front panel** rendered from the type's `panel` (SVG:
   displays, buttons, knobs, switches; mouse drag/wheel on knobs, keyboard shortcuts, arrow keys to
   step digits); a generic **controls table** for any type without a panel; live charts of readouts;
+  a **trace display** (scope graticule / analyzer grid, markers, CSV/PNG export) for scopes and analyzers;
+  softkey column for softkey-driven instruments; lock status and take/release/break buttons;
   instance editor; type editor (YAML with validation errors shown inline, save as new version);
   bus scan; raw console.
 
 ## 7. Security and safety
 - **LAN or VPN use only.** Traffic is cleartext TCP (no TLS by design), so the server must not be
   exposed to the internet; remote users come in over a VPN.
-- **Optional per-client access token**, to guard against accidental control rather than to resist
-  attack (a cleartext token can be sniffed). Sent in `hello`; tokens map to roles `observer`,
-  `operator`, `admin` (admin: raw commands, type edits, lock breaking). Can be switched off in the
-  server config, in which case every client is an operator.
+- **No access tokens or roles (decided).** Anyone who can reach the ports has full control. Accidental
+  interference between users is prevented by the per-instrument **control locks** (section 3).
 - Server-side limit checks on every set, using type ranges narrowed by instance overrides.
-- Every set/action/raw command logged (who, what, when) to an audit log.
+- Every set/action/raw command and every lock break logged (client name, host, time) to an audit log.
+- **Safe state (decided):** by default outputs are left as they are when the server stops or the
+  controlling client disconnects; each instance can opt in to switching outputs off instead.
 
 ## 8. Repository layout
 ```
@@ -218,7 +270,7 @@ server/gpibremote/   backends/ (linuxgpib.py ctypes, sim.py), bus.py, registry.p
 cli/gpibctl/
 web/                 index.html, js/, css/
 devices/types/       built-in type files
-deploy/              systemd unit, install script, Python/OpenSSL build script for the Pi
+deploy/              systemd unit, install script, Python build script, offline package bundle for the Pi
 docs/                PLAN.md, pi-setup.md, protocol.md, device-type-format.md
 scripts/             test_e3631a.py and other hardware checks
 tests/
@@ -229,18 +281,26 @@ tests/
 | Phase | Content | Done when |
 |---|---|---|
 | 0. Platform | Build Python 3.11 (no `ssl`) on the Pi; offline package install from the PC; ctypes GPIB wrapper; repo skeleton; systemd unit; CI-less test run | `python3.11` on the Pi reads `*IDN?` through the wrapper; server starts at boot |
-| 1. Core server | Type schema + loader + validator; E3631A type; simulator; bus worker; instance runtime with polling and limits; registry with git history; JSON Lines on 9000 | Over `nc`, list types, create an instance, set/read the E3631A, receive reading events |
-| 2. CLI | Command mode, watch, raw, menu mode | All E3631A functions usable from `gpibctl` on Windows against the Pi |
-| 3. Web client | WebSocket transport, instrument list, generic controls, live readouts, charts | Full E3631A control from a browser |
-| 4. Front panels and authoring | Panel renderer; type editor; `types.put` versioning; bus scan with IDN matching; instance upgrade | A new type written in the browser is usable from the CLI immediately |
-| 5. Multi-user and library | Locks/leases, tokens and roles, audit log, more built-in types, docs | Two users can share the bench safely |
+| 1. Core server | Type schema + loader + validator; E3631A, 6632A and 3457A types (SCPI and pre-SCPI); simulator; bus worker with SRQ/serial poll; instance runtime with polling, limits and **control locks**; registry with git history and push to `device-data`; audit log; JSON Lines on 9000 | Over `nc`, list types, create instances, lock, set/read the E3631A and 6632A, receive reading events; a second client is refused while locked |
+| 2. CLI | Command mode, watch, lock, raw, menu mode | All functions of the phase-1 instruments usable from `gpibctl` on Windows against the Pi |
+| 3. Web client | WebSocket transport, instrument list, generic controls, live readouts, charts, lock UI | Full control of the phase-1 instruments from a browser |
+| 4. Traces | `trace` readouts and block/CURVE parsers; types for one scope (TDS754C) and one analyzer (8714ET); trace display in web and CSV export in CLI | A live scope waveform and an analyzer sweep in the browser |
+| 5. Front panels and authoring | Panel renderer; softkey menus; type editor; `types.put` versioning; safe bus scan with identity probes; instance upgrade | A new type written in the browser is usable from the CLI immediately |
+| 6. Library | Remaining bench types (3456A, 3455A, 5334B, 8713B, 8714ES, 3589A, TDS684B, the "8519C"), each verified on its instrument; docs | Every bench instrument usable without raw commands |
 
 Each phase ends with a hardware test on the Pi and an update to the docs.
 
-## 10. Open questions (summary)
-1. Which other instruments (models, addresses) will be on the bus? This sets the built-in library order.
-2. ~~Network exposure~~ Decided: plain TCP/HTTP/WS, no TLS, LAN or VPN only.
-3. Access tokens (optional, can be switched off) and control locking: needed from the start, or later?
-4. Where should versioned instance/type data be pushed (this repo, separate repo, local only)?
-5. Default safe state: should outputs be switched off when the server stops or loses a client? (Proposed: leave as is, configurable per instance.)
-6. OK to spend ~1.5 h of Pi compile time building Python 3.11 without `ssl` (phase 0)?
+## 10. Decisions and open questions
+
+Decided (2026-11-26):
+- Plain TCP/HTTP/WS, no TLS; LAN or VPN only.
+- Control locks from phase 1; no access tokens or roles.
+- Versioned types/instances pushed to this repo, branch `device-data`.
+- Outputs left as they are on server stop/disconnect by default; per-instance opt-in to switch off.
+- Bench instruments: see 4.4.
+
+Open:
+1. "8519C": which instrument is it (HP 8591C spectrum analyzer?)
+2. GPIB addresses of the other instruments, and when they'll be connected to this bus.
+3. A deploy key for the Pi to push `device-data` (you add it in the GitHub repo settings; phase 1).
+4. OK to spend ~1.5 h of Pi compile time building Python 3.11 without `ssl` (phase 0)?
