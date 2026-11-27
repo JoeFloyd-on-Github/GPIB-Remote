@@ -206,7 +206,7 @@ known yet except the E3631A (5); they'll be set per instance.
 | HP 3589A | Spectrum/network analyzer | SCPI (HP-IB) | Traces |
 | Tektronix TDS684B | Oscilloscope | Tek GPIB (SCPI-like) | Waveforms via `CURVE?` |
 | Tektronix TDS754C | Oscilloscope | Tek GPIB (SCPI-like) | Shares a TDS family base with the 684B |
-| "8519C" | **[unclear: please confirm the model]** | | Possibly HP 8591C spectrum analyzer? |
+| HP 8591C | Cable TV spectrum analyzer (9 kHz-1.8 GHz) | HP 8590-series language (`CF`, `SP`, `TS`, `TRA?`), `ID?` | Pre-SCPI; traces (401 points) |
 
 Also built in: "Generic SCPI instrument" (IDN, reset, error queue, raw I/O) and "Raw GPIB device"
 (raw I/O only), so any instrument can be used before it has a type.
@@ -287,7 +287,7 @@ tests/
 | 3. Web client | WebSocket transport, instrument list, generic controls, live readouts, charts, lock UI | Full control of the phase-1 instruments from a browser |
 | 4. Traces | `trace` readouts and block/CURVE parsers; types for one scope (TDS754C) and one analyzer (8714ET); trace display in web and CSV export in CLI | A live scope waveform and an analyzer sweep in the browser |
 | 5. Front panels and authoring | Panel renderer; softkey menus; type editor; `types.put` versioning; safe bus scan with identity probes; instance upgrade | A new type written in the browser is usable from the CLI immediately |
-| 6. Library | Remaining bench types (3456A, 3455A, 5334B, 8713B, 8714ES, 3589A, TDS684B, the "8519C"), each verified on its instrument; docs | Every bench instrument usable without raw commands |
+| 6. Library | Remaining bench types (3456A, 3455A, 5334B, 8713B, 8714ES, 3589A, TDS684B, 8591C), each verified on its instrument; docs | Every bench instrument usable without raw commands |
 
 Each phase ends with a hardware test on the Pi and an update to the docs.
 
@@ -314,5 +314,4 @@ Decided (2026-11-26):
 - Bench instruments: see 4.4.
 
 Open:
-1. "8519C": which instrument is it (HP 8591C spectrum analyzer?)
-2. GPIB addresses of the other instruments, and when they'll be connected to this bus.
+1. GPIB addresses of the other instruments, and when they'll be connected to this bus.
