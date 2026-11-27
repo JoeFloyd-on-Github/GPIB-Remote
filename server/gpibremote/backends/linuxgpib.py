@@ -56,6 +56,7 @@ class LinuxGpibBackend(Backend):
         self._eosmode = (eos & 0xFF) | (REOS if reos else 0)
         self._send_eoi = 1 if send_eoi else 0
         self._devs = {}  # (pad, sad) -> device descriptor
+        self._modes = {}  # (pad, sad) -> eos mode, when configured differently from the default
         self._chunk = ctypes.create_string_buffer(64 * 1024)
 
     # -- helpers --------------------------------------------------------------
@@ -68,11 +69,20 @@ class LinuxGpibBackend(Backend):
                       code=mnemonic, status=status)
         return status
 
+    def configure(self, pad, sad, eos=b"\n"):
+        mode = 0 if eos is None else (eos[0] | REOS)
+        if self._modes.get((pad, sad), self._eosmode) != mode:
+            self._modes[(pad, sad)] = mode
+            ud = self._devs.pop((pad, sad), None)
+            if ud is not None:
+                self._lib.ibonl(ud, 0)  # reopened with the new mode on next use
+
     def _dev(self, pad, sad, timeout):
         key = (pad, sad)
         ud = self._devs.get(key)
         if ud is None:
-            ud = self._lib.ibdev(self.board, pad, sad, timeout_code(timeout), self._send_eoi, self._eosmode)
+            mode = self._modes.get(key, self._eosmode)
+            ud = self._lib.ibdev(self.board, pad, sad, timeout_code(timeout), self._send_eoi, mode)
             if ud < 0:
                 self._check(self._lib.ThreadIbsta() | ERR, "ibdev(pad=%d, sad=%d)" % key)
             self._devs[key] = ud

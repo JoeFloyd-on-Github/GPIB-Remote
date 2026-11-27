@@ -1,0 +1,36 @@
+schema: 1
+type: generic.scpi
+version: '1.0.0'
+title: Generic SCPI / IEEE 488.2 instrument
+verified: true
+description: >
+  For any instrument that understands the IEEE 488.2 common commands, before it has a type of
+  its own. Use raw commands for anything else.
+
+connection:
+  eos: "\n"
+  timeout: 3s
+
+identify:
+  probe: '*IDN?'
+  match: '.'
+
+errors:
+  query: 'SYST:ERR?'
+  none: '^\+?0,'
+
+readouts:
+  identity: {label: Identity, query: '*IDN?', parse: text}
+  error: {label: Next error, query: 'SYST:ERR?', parse: text}
+  esr: {label: Event status register, query: '*ESR?', parse: int}
+
+actions:
+  reset: {label: Reset (*RST), send: ['*RST'], confirm: true}
+  clear_status: {label: Clear status (*CLS), send: ['*CLS']}
+
+menu:
+  - Status: [identity, error, esr]
+  - System: [clear_status, reset]
+
+sim:
+  identity: 'GENERIC,SCPI,0,1.0'

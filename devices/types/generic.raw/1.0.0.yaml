@@ -1,0 +1,16 @@
+schema: 1
+type: generic.raw
+version: '1.0.0'
+title: Raw GPIB device
+verified: true
+description: >
+  Any GPIB device, with no model: only raw write/read/query, serial poll, clear and trigger.
+  Sends nothing on its own (no identity probe), so it is safe for instruments with old
+  command sets that could misread unexpected characters.
+
+connection:
+  eos: "\n"
+  timeout: 3s
+
+identify:
+  probe: null

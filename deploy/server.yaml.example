@@ -1,0 +1,32 @@
+# GPIB-Remote server configuration. install.sh copies this to /etc/gpibremote/server.yaml
+# if that file doesn't exist yet; edit the copy, then: sudo systemctl restart gpibremote
+#
+# Plain TCP, no TLS: keep the server on a LAN or behind a VPN.
+
+listen:
+  host: 0.0.0.0
+  port: 9000
+
+boards:
+  - board: 0            # /dev/gpib0 (NI GPIB-USB-HS)
+    backend: linuxgpib
+  # A simulated bench instead, for testing without hardware:
+  # - board: 0
+  #   backend: sim
+  #   instruments: {5: agilent.e3631a, 6: hp.6632a, 22: hp.3457a}
+
+# Instances and types added at run time. A git repository; every change is a commit.
+data_dir: /var/lib/gpibremote/data
+
+git:
+  enabled: true
+  # Push the data to the GPIB-Remote repo (branch device-data) over SSH with the deploy key in
+  # /var/lib/gpibremote/.ssh. Leave null to keep the history on the Pi only.
+  remote: null          # e.g. git@github.com:JoeFloyd-on-Github/GPIB-Remote.git
+  branch: device-data
+  push_delay: 10s       # wait for changes to settle before pushing
+
+locks:
+  idle_timeout: 15min   # a control lock is released after this long without activity
+
+log_level: INFO

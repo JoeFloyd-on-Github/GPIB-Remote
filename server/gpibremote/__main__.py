@@ -1,34 +1,78 @@
-"""Run the server:  python -m gpibremote [--backend linuxgpib|sim] [--port 9000]"""
+"""Run the server:  python -m gpibremote [--config FILE] [--backend linuxgpib|sim] [--port 9000]"""
 
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 
-from . import __version__
+from . import __version__, config
 from .backends import open_backend
+from .backends.sim import SimBackend, TypeSimInstrument
 from .bus import Bus
 from .protocol import Dispatcher
+from .registry import Registry
+from .runtime import Hub, Manager
 from .tcp import serve
+
+DEFAULT_CONFIG = "/etc/gpibremote/server.yaml"
 
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="gpibremote", description="GPIB-Remote server")
-    ap.add_argument("--backend", choices=["linuxgpib", "sim"], default="linuxgpib")
-    ap.add_argument("--board", type=int, default=0, help="GPIB board (minor) number")
-    ap.add_argument("--host", default="0.0.0.0", help="listen address (plain TCP, LAN/VPN only)")
-    ap.add_argument("--port", type=int, default=9000)
-    ap.add_argument("--log-level", default="INFO")
+    ap.add_argument("--config", help="YAML config (default %s if it exists)" % DEFAULT_CONFIG)
+    ap.add_argument("--backend", choices=["linuxgpib", "sim"], help="override every board's backend")
+    ap.add_argument("--host", help="listen address (plain TCP, LAN/VPN only)")
+    ap.add_argument("--port", type=int)
+    ap.add_argument("--data-dir", help="where instances and added types are kept (a git repo)")
+    ap.add_argument("--no-git", action="store_true", help="don't version the data directory")
+    ap.add_argument("--log-level")
     return ap.parse_args(argv)
 
 
-async def run(args):
-    bus = Bus(open_backend(args.backend, args.board))
-    dispatcher = Dispatcher({args.board: bus})
-    server = await serve(dispatcher, args.host, args.port)
-    logging.info("gpibremote %s listening on %s:%d (backend %s, board %d)",
-                 __version__, args.host, args.port, args.backend, args.board)
+def build_config(args):
+    path = args.config or (DEFAULT_CONFIG if os.path.exists(DEFAULT_CONFIG) else None)
+    over = {}
+    if args.host or args.port:
+        over["listen"] = {k: v for k, v in (("host", args.host), ("port", args.port)) if v}
+    if args.data_dir:
+        over["data_dir"] = args.data_dir
+    if args.no_git:
+        over["git"] = {"enabled": False}
+    if args.log_level:
+        over["log_level"] = args.log_level
+    cfg = config.load(path, over)
+    if args.backend:
+        for b in cfg["boards"]:
+            b["backend"] = args.backend
+    return cfg, path
+
+
+def make_bus(bcfg, registry):
+    board = bcfg.get("board", 0)
+    if bcfg.get("backend") == "sim":
+        sims = bcfg.get("instruments") or config.DEFAULT_SIM
+        return Bus(SimBackend(board, {int(p): TypeSimInstrument(registry.get_type(t)) for p, t in sims.items()}))
+    opts = {k: v for k, v in bcfg.items() if k not in ("board", "backend")}
+    return Bus(open_backend(bcfg.get("backend", "linuxgpib"), board, **opts))
+
+
+async def run(cfg):
+    g = cfg["git"]
+    registry = Registry(cfg["data_dir"], cfg["builtin_types"], g.get("remote"), g.get("branch", "device-data"),
+                        g["push_delay"], g.get("enabled", True))
+    await asyncio.get_running_loop().run_in_executor(None, registry.load)
+    buses = {b.get("board", 0): make_bus(b, registry) for b in cfg["boards"]}
+    hub = Hub()
+    manager = Manager(registry, buses, hub, cfg["locks"]["idle_timeout"])
+    dispatcher = Dispatcher(buses, registry, manager, hub)
+    server = await serve(dispatcher, cfg["listen"]["host"], cfg["listen"]["port"], hub, manager)
+    manager.start()
+    logging.info("gpibremote %s listening on %s:%d; boards %s; data %s", __version__,
+                 cfg["listen"]["host"], cfg["listen"]["port"],
+                 ", ".join("%d=%s" % (b.get("board", 0), b.get("backend")) for b in cfg["boards"]),
+                 cfg["data_dir"])
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -41,16 +85,20 @@ async def run(args):
     finally:
         logging.info("shutting down")
         server.close()
-        await server.wait_closed()
-        bus.close()
+        await manager.shutdown()
+        registry.git.stop()
+        for bus in buses.values():
+            bus.close()
 
 
 def main(argv=None):
     args = parse_args(argv)
-    logging.basicConfig(level=args.log_level.upper(),
+    cfg, path = build_config(args)
+    logging.basicConfig(level=str(cfg["log_level"]).upper(),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.info("config: %s", path or "built-in defaults")
     try:
-        asyncio.run(run(args))
+        asyncio.run(run(cfg))
     except KeyboardInterrupt:
         pass
     return 0

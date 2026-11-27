@@ -4,6 +4,8 @@ All methods are blocking and must be called from the board's bus worker thread o
 Addresses are (pad, sad): primary address 0-30, secondary address 0 for none or 0x60-0x7e.
 """
 
+import time
+
 # NI-488 timeout codes (T10us .. T1000s) and their durations in seconds.
 _TIMEOUTS = [
     (0, 0.0), (1, 10e-6), (2, 30e-6), (3, 100e-6), (4, 300e-6), (5, 1e-3), (6, 3e-3),
@@ -71,6 +73,27 @@ class Backend:
     def serial_poll(self, pad, sad):
         """Serial poll; returns the status byte (int)."""
         raise NotImplementedError
+
+    def configure(self, pad, sad, eos=b"\n"):
+        """Set read termination for one address: an EOS byte, or None to end on EOI only."""
+
+    def transaction(self, pad, sad, steps, timeout=3.0, delay=0.0, max_bytes=1 << 20):
+        """Run several operations on one device with nothing else in between.
+
+        steps: list of ("w", bytes) write, ("q", bytes) write then read, ("r", None) read,
+        ("t", None) group execute trigger. Returns the list of bytes read, in order.
+        """
+        out = []
+        for i, (kind, data) in enumerate(steps):
+            if i and delay:
+                time.sleep(delay)
+            if kind in ("w", "q"):
+                self.write(pad, sad, data, timeout)
+            if kind == "t":
+                self.trigger(pad, sad)
+            if kind in ("q", "r"):
+                out.append(self.read(pad, sad, max_bytes, timeout))
+        return out
 
     # -- bus ----------------------------------------------------------------
     def listeners(self, pads=range(1, 31)):

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from . import Client
+from . import Client, ServerError
 
 
 def main(argv=None):
@@ -52,7 +52,7 @@ def main(argv=None):
             print(client.request("bus.serial_poll", pad=args.pad, **common)["status"])
         else:
             client.request("bus." + args.cmd, pad=args.pad, **common)
-    except RuntimeError as exc:
+    except ServerError as exc:
         print("error:", exc, file=sys.stderr)
         return 1
     finally:

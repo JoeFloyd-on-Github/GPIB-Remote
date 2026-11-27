@@ -21,7 +21,12 @@ mkdir -p "$BASE/app" "$DATA"
 chown gpibremote:gpib "$DATA"
 
 # Application files (copied, so the service doesn't run from someone's working tree).
-rsync -a --delete --exclude .git --exclude deploy/packages "$SRC/" "$BASE/app/"
+rsync -a --delete --exclude .git --exclude .venv --exclude deploy/packages --exclude __pycache__ \
+    "$SRC/" "$BASE/app/"
+
+# Configuration: created once from the example, never overwritten.
+mkdir -p /etc/gpibremote
+[ -e /etc/gpibremote/server.yaml ] || install -m 644 "$SRC/deploy/server.yaml.example" /etc/gpibremote/server.yaml
 
 # Virtual environment and packages.
 [ -x "$BASE/venv/bin/python" ] || "$PY" -m venv "$BASE/venv"

@@ -88,13 +88,13 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(r["encoding"], "base64")
 
     def test_errors(self):
-        with self.assertRaisesRegex(RuntimeError, "^gpib:"):
+        with self.assertRaisesRegex(Exception, "^gpib:"):
             self.c.request("raw.query", pad=9, data="*IDN?")
-        with self.assertRaisesRegex(RuntimeError, "^timeout:"):
+        with self.assertRaisesRegex(Exception, "^timeout:"):
             self.c.request("raw.read", pad=5)
-        with self.assertRaisesRegex(RuntimeError, "^bad_request:"):
+        with self.assertRaisesRegex(Exception, "^bad_request:"):
             self.c.request("raw.query", pad=31, data="*IDN?")
-        with self.assertRaisesRegex(RuntimeError, "^unknown_op:"):
+        with self.assertRaisesRegex(Exception, "^unknown_op:"):
             self.c.request("no.such.op")
 
     def test_bus_ops(self):
