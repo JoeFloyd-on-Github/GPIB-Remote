@@ -27,14 +27,19 @@ type's model and render it. Reasons:
 Clients may cache types by `name@version` + content hash.
 
 ### 2.2 Runtime on the Jessie Pi
-Python 3.4 cannot run modern asyncio code (`async`/`await` arrived in 3.5) or current libraries,
-and Jessie's OpenSSL 1.0.1k blocks Python 3.7+ `ssl`. Plan:
-- Build **OpenSSL 1.1.1w** and **Python 3.11** from source into `/opt/gpibremote/` (does not touch the
-  system Python). Estimated 1.5-2 h of compile on the Pi 2, unattended. Fallback if gcc 4.9 can't build 3.11: Python 3.9.
+Python 3.4 cannot run modern asyncio code (`async`/`await` arrived in 3.5) or current libraries. Plan:
+- Build **Python 3.11** from source into `/opt/gpibremote/` (does not touch the system Python),
+  **without the `ssl` module**. The system uses no TLS anywhere (see 2.4), so Jessie's OpenSSL 1.0.1k
+  doesn't matter and no newer OpenSSL is built. Estimated ~1.5 h of compile on the Pi 2, unattended.
+  Fallback if gcc 4.9 can't build 3.11: Python 3.9.
 - Access GPIB through our own small **ctypes wrapper over `/usr/local/lib/libgpib.so`**, so we don't
   depend on the 3.4-only `gpib` extension.
-- Dependencies: pure-Python only (no wheels exist for this platform): `PyYAML` (pure mode),
-  `aiohttp` with `AIOHTTP_NO_EXTENSIONS=1` or an equivalent pure-Python HTTP/WebSocket stack. **[decide in phase 0 after a build test]**
+- Dependencies: the standard library plus pure-Python packages only (no wheels exist for this
+  platform). Without `ssl`, pip on the Pi can't reach PyPI, so packages are downloaded on the PC
+  (`pip download --no-binary :all:` or pure-Python wheels), copied to the Pi and installed from
+  local files (`pip install --no-index --find-links`). Candidates: `PyYAML` (pure mode) and a pure-Python
+  HTTP/WebSocket stack (e.g. `aiohttp` with `AIOHTTP_NO_EXTENSIONS=1`), or a small stdlib-only
+  HTTP + WebSocket implementation on asyncio. **[decide in phase 0 after a build test]**
 
 ### 2.3 Development environment
 - Develop here on Windows (or any Linux box) against a **simulated GPIB backend**. Simulated
@@ -44,9 +49,10 @@ and Jessie's OpenSSL 1.0.1k blocks Python 3.7+ `ssl`. Plan:
 - Tests: `pytest` on the dev machine with the simulator; a hardware test set run on the Pi.
 
 ### 2.4 Ports and protocol
-- **9000/tcp:** JSON Lines protocol (one JSON object per line). Easy for a CLI, `nc`, or scripts.
-- **8080/tcp:** HTTP: serves the web client, plus a WebSocket at `/ws` carrying **the same JSON
-  messages** as port 9000. One protocol handler, two transports, so CLI and web have identical power.
+**Plain TCP, no SSL/TLS anywhere** (decided). All traffic is cleartext.
+- **9000/tcp:** raw TCP, newline-delimited JSON (one JSON object per line). Easy for a CLI, `nc`, or scripts.
+- **8080/tcp:** plain `http://`: serves the web client, plus a plain `ws://` WebSocket at `/ws` carrying
+  **the same JSON messages** as port 9000. One protocol handler, two transports, so CLI and web have identical power.
 - A small REST read-only mirror (`GET /api/types`, `/api/instances/...`) for scripts is optional.
 
 ## 3. Architecture
@@ -196,8 +202,12 @@ Request `{"id": 7, "op": "...", ...}`; response `{"id": 7, "ok": true, "result":
   bus scan; raw console.
 
 ## 7. Security and safety
-- Intended for a trusted LAN. Optional shared tokens with roles: `observer`, `operator`, `admin`
-  (admin: raw commands, type edits, lock breaking). **[decide: is LAN-only with tokens enough, or will it be reachable from the internet (then TLS + a reverse proxy)?]**
+- **LAN or VPN use only.** Traffic is cleartext TCP (no TLS by design), so the server must not be
+  exposed to the internet; remote users come in over a VPN.
+- **Optional per-client access token**, to guard against accidental control rather than to resist
+  attack (a cleartext token can be sniffed). Sent in `hello`; tokens map to roles `observer`,
+  `operator`, `admin` (admin: raw commands, type edits, lock breaking). Can be switched off in the
+  server config, in which case every client is an operator.
 - Server-side limit checks on every set, using type ranges narrowed by instance overrides.
 - Every set/action/raw command logged (who, what, when) to an audit log.
 
@@ -218,7 +228,7 @@ tests/
 
 | Phase | Content | Done when |
 |---|---|---|
-| 0. Platform | Build OpenSSL + Python 3.11 on the Pi; ctypes GPIB wrapper; repo skeleton; systemd unit; CI-less test run | `python3.11` on the Pi reads `*IDN?` through the wrapper; server starts at boot |
+| 0. Platform | Build Python 3.11 (no `ssl`) on the Pi; offline package install from the PC; ctypes GPIB wrapper; repo skeleton; systemd unit; CI-less test run | `python3.11` on the Pi reads `*IDN?` through the wrapper; server starts at boot |
 | 1. Core server | Type schema + loader + validator; E3631A type; simulator; bus worker; instance runtime with polling and limits; registry with git history; JSON Lines on 9000 | Over `nc`, list types, create an instance, set/read the E3631A, receive reading events |
 | 2. CLI | Command mode, watch, raw, menu mode | All E3631A functions usable from `gpibctl` on Windows against the Pi |
 | 3. Web client | WebSocket transport, instrument list, generic controls, live readouts, charts | Full E3631A control from a browser |
@@ -229,8 +239,8 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
 
 ## 10. Open questions (summary)
 1. Which other instruments (models, addresses) will be on the bus? This sets the built-in library order.
-2. Network exposure: LAN only, or internet-facing?
-3. Authentication and control locking: needed from the start, or later?
+2. ~~Network exposure~~ Decided: plain TCP/HTTP/WS, no TLS, LAN or VPN only.
+3. Access tokens (optional, can be switched off) and control locking: needed from the start, or later?
 4. Where should versioned instance/type data be pushed (this repo, separate repo, local only)?
 5. Default safe state: should outputs be switched off when the server stops or loses a client? (Proposed: leave as is, configurable per instance.)
-6. OK to spend ~2 h of Pi compile time building Python 3.11 (phase 0)?
+6. OK to spend ~1.5 h of Pi compile time building Python 3.11 without `ssl` (phase 0)?

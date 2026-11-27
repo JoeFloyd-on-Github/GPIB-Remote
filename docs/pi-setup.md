@@ -55,4 +55,5 @@ restores a voltage while the output stays off).
 
 - If the kernel is ever upgraded (`apt-get upgrade` of `raspberrypi-kernel`/`raspberrypi-bootloader`),
   the GPIB modules must be rebuilt against the new kernel. Consider `sudo apt-mark hold raspberrypi-bootloader`.
-- Jessie's OpenSSL is 1.0.1k and Python is 3.4; see `docs/PLAN.md` for the runtime plan.
+- Jessie's Python is 3.4; a newer Python is built without `ssl` (the system uses plain TCP, no TLS),
+  so Python packages are copied from the PC rather than fetched with pip. See `docs/PLAN.md`.
