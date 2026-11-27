@@ -66,4 +66,5 @@ cd server && python -m gpibremote --backend sim --data-dir ../data --port 9000
 git -C ~/GPIB-Remote pull                        # on the Pi
 python deploy/fetch_packages.py                  # on a PC, then copy deploy/packages/ to the Pi
 sudo ~/GPIB-Remote/deploy/install.sh             # on the Pi
+python scripts/save_device_data.py               # on a PC: copy the Pi's types/instances history to GitHub
 ```

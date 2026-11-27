@@ -45,7 +45,7 @@ class Stack:
             asyncio.set_event_loop(self.loop)
 
             async def start():
-                self.registry = Registry(data_dir, BUILTIN, push_delay=0)
+                self.registry = Registry(data_dir, BUILTIN)
                 self.registry.load()
                 self.bus = make_bus({"board": 0, "backend": "sim"}, self.registry)
                 self.hub = Hub()

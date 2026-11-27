@@ -3,8 +3,8 @@
 Layout of the data directory (its own git repo, branch `device-data`):
     types/<type>/<version>.yaml      types added at run time (built-ins live in the app)
     instances/<id>.yaml              device instances
-Every change is a commit whose author is the client that made it. If a remote is configured
-the branch is pushed a few seconds after the last change, and retried while it fails.
+Every change is a commit whose author is the client that made it. The server never talks to
+GitHub: the history is copied off the Pi from a PC with scripts/save_device_data.py.
 """
 
 import logging
@@ -12,7 +12,6 @@ import os
 import re
 import subprocess
 import threading
-import time
 
 import yaml
 
@@ -45,15 +44,11 @@ def _write(path, text):
 
 
 class Git:
-    def __init__(self, root, remote=None, branch="device-data", push_delay=10.0, enabled=True):
+    def __init__(self, root, branch="device-data", enabled=True):
         self.root = root
-        self.remote = remote
         self.branch = branch
-        self.push_delay = push_delay
         self.enabled = enabled
-        self._timer = None
         self._lock = threading.Lock()
-        self.last_push = {"ok": None, "t": None, "msg": "never pushed"}
 
     def run(self, *args, check=True):
         p = subprocess.run(("git",) + args, cwd=self.root, stdout=subprocess.PIPE,
@@ -63,20 +58,15 @@ class Git:
         return p.stdout
 
     def init(self):
-        if not self.enabled:
+        if not self.enabled or os.path.isdir(os.path.join(self.root, ".git")):
             return
-        if not os.path.isdir(os.path.join(self.root, ".git")):
-            self.run("init", "-q")
-            self.run("symbolic-ref", "HEAD", "refs/heads/" + self.branch)
-            _write(os.path.join(self.root, "README.md"),
-                   "# GPIB-Remote device data\n\nDevice types and instances managed by the GPIB-Remote "
-                   "server. Every change is committed by the server; edit through a client so the "
-                   "server validates and versions it.\n")
-            self.commit(["README.md"], "gpibremote", "Initialise device data")
-        if self.remote:
-            remotes = self.run("remote").split()
-            self.run("remote", "set-url" if "origin" in remotes else "add", "origin", self.remote)
-            self.schedule_push(0.5)
+        self.run("init", "-q")
+        self.run("symbolic-ref", "HEAD", "refs/heads/" + self.branch)
+        _write(os.path.join(self.root, "README.md"),
+               "# GPIB-Remote device data\n\nDevice types and instances managed by the GPIB-Remote "
+               "server. Every change is committed by the server; edit through a client so the "
+               "server validates and versions it.\n")
+        self.commit(["README.md"], "gpibremote", "Initialise device data")
 
     def commit(self, paths, who, message):
         if not self.enabled:
@@ -88,9 +78,7 @@ class Git:
             name = re.sub(r"[<>\n]", "", who or "unknown")[:80]
             self.run("-c", "user.name=gpibremote", "-c", "user.email=gpibremote@localhost",
                      "commit", "-q", "--author", "%s <gpibremote@localhost>" % name, "-m", message)
-            rev = self.run("rev-parse", "--short", "HEAD").strip()
-        self.schedule_push()
-        return rev
+            return self.run("rev-parse", "--short", "HEAD").strip()
 
     def history(self, path=None, limit=50):
         if not self.enabled:
@@ -105,42 +93,16 @@ class Git:
                 out.append({"rev": parts[0], "author": parts[1], "date": parts[2], "message": parts[3]})
         return out
 
-    def schedule_push(self, delay=None):
-        if not (self.enabled and self.remote):
-            return
-        with self._lock:
-            if self._timer:
-                self._timer.cancel()
-            self._timer = threading.Timer(self.push_delay if delay is None else delay, self._push)
-            self._timer.daemon = True
-            self._timer.start()
-
-    def _push(self):
-        try:
-            with self._lock:
-                self.run("push", "-q", "origin", "%s:%s" % (self.branch, self.branch))
-            self.last_push = {"ok": True, "t": time.time(), "msg": "pushed"}
-            log.info("pushed %s to %s", self.branch, self.remote)
-        except Exception as exc:  # network down, key not authorised, ...: retry later
-            self.last_push = {"ok": False, "t": time.time(), "msg": str(exc)[-300:]}
-            log.warning("push failed (retrying in 5 min): %s", exc)
-            self.schedule_push(300)
-
-    def stop(self):
-        if self._timer:
-            self._timer.cancel()
-
 
 class Registry:
-    def __init__(self, data_dir, builtin_dir, git_remote=None, git_branch="device-data",
-                 push_delay=10.0, git_enabled=True):
+    def __init__(self, data_dir, builtin_dir, git_enabled=True):
         self.data_dir = data_dir
         self.builtin_dir = builtin_dir
         self.types = {}          # name -> {version: DeviceType}
         self.instances = {}      # id -> dict
         self._lock = threading.RLock()
         os.makedirs(data_dir, exist_ok=True)
-        self.git = Git(data_dir, git_remote, git_branch, push_delay, git_enabled)
+        self.git = Git(data_dir, enabled=git_enabled)
 
     # -- loading ------------------------------------------------------------
     def load(self):

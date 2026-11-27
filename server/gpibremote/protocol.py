@@ -168,7 +168,6 @@ class Dispatcher:
                 "boards": [b.backend.info() for b in self.buses.values()]}
         if self.registry is not None:
             info["sessions"] = [{"id": s.id, "who": str(s.who), "peer": s.peer} for s in self.hub.sessions]
-            info["data_push"] = self.registry.git.last_push
         return info
 
     # -- types --------------------------------------------------------------

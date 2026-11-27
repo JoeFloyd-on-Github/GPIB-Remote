@@ -165,10 +165,11 @@ stored and versioned next to it (server-side only). Used sparingly; YAML stays t
 - Each file also has a content hash, so clients can cache and detect changes.
 - Instances pin a type version. The server reports when a newer compatible version exists; upgrading is an explicit step.
 - History: every change to types or instances is a git commit in the data directory (who, when, why).
-- **Pushed to this repo (decided)**, on a dedicated branch `device-data`, so server commits never
-  collide with code on `main`. The Pi pushes over SSH with a deploy key that has write access to
-  this repo only (the Pi's git doesn't depend on our ssl-less Python). Pushes are batched (a few
-  seconds after the last change) and retried when the network is down; the local repo stays authoritative.
+- **Saved to this repo from a PC, never by the service (decided 2026-11-27).** The running server
+  has no GitHub access or credentials. `scripts/save_device_data.py`, run on a PC with SSH access to
+  the Pi, fetches the data repository into the branch `device-data` (fast-forward only) and pushes it,
+  so server commits never collide with code on `main`. It also reports whether the Pi's
+  `/etc/gpibremote/server.yaml` differs from `deploy/server.yaml.example`.
 - Promoting a user-made type to a built-in is a normal merge from `device-data` into `devices/types/` on `main`.
 
 ### 4.3 Device instance
@@ -281,7 +282,7 @@ tests/
 | Phase | Content | Done when |
 |---|---|---|
 | 0. Platform | Build Python 3.11 (no `ssl`) on the Pi; offline package install from the PC; ctypes GPIB wrapper; repo skeleton; systemd unit; CI-less test run | `python3.11` on the Pi reads `*IDN?` through the wrapper; server starts at boot |
-| 1. Core server | Type schema + loader + validator; E3631A, 6632A and 3457A types (SCPI and pre-SCPI); simulator; bus worker with SRQ/serial poll; instance runtime with polling, limits and **control locks**; registry with git history and push to `device-data`; audit log; JSON Lines on 9000 | Over `nc`, list types, create instances, lock, set/read the E3631A and 6632A, receive reading events; a second client is refused while locked |
+| 1. Core server | Type schema + loader + validator; E3631A, 6632A and 3457A types (SCPI and pre-SCPI); simulator; bus worker with SRQ/serial poll; instance runtime with polling, limits and **control locks**; registry with git history (saved to `device-data` from a PC); audit log; JSON Lines on 9000 | Over `nc`, list types, create instances, lock, set/read the E3631A and 6632A, receive reading events; a second client is refused while locked |
 | 2. CLI | Command mode, watch, lock, raw, menu mode | All functions of the phase-1 instruments usable from `gpibctl` on Windows against the Pi |
 | 3. Web client | WebSocket transport, instrument list, generic controls, live readouts, charts, lock UI | Full control of the phase-1 instruments from a browser |
 | 4. Traces | `trace` readouts and block/CURVE parsers; types for one scope (TDS754C) and one analyzer (8714ET); trace display in web and CSV export in CLI | A live scope waveform and an analyzer sweep in the browser |
@@ -295,7 +296,7 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
   backend; simulator; bus worker; JSON Lines server with raw operations (`docs/protocol.md`);
   minimal `gpibctl`; offline package install; systemd service verified across a reboot.
   The HTTP/WebSocket stack choice (2.2) is still open; it's needed in phase 3.
-- Phase 1: **done 2026-11-27**, except pushing `device-data` to GitHub (waits for the deploy key).
+- Phase 1: **done 2026-11-27.**
   Type format (`docs/device-type-format.md`) with validator; types for the E3631A (verified on the
   bench), 6632A and 3457A (simulator only, `verified: false`), generic SCPI and raw; git-versioned
   registry; instance runtime with polling, limits, error-queue checks, locks and safe state;
@@ -308,12 +309,10 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
 Decided (2026-11-26):
 - Plain TCP/HTTP/WS, no TLS; LAN or VPN only.
 - Control locks from phase 1; no access tokens or roles.
-- Versioned types/instances pushed to this repo, branch `device-data`.
+- Versioned types/instances kept in git on the Pi and saved to this repo (branch `device-data`) from a PC; the service has no GitHub access.
 - Outputs left as they are on server stop/disconnect by default; per-instance opt-in to switch off.
 - Bench instruments: see 4.4.
 
 Open:
 1. "8519C": which instrument is it (HP 8591C spectrum analyzer?)
 2. GPIB addresses of the other instruments, and when they'll be connected to this bus.
-3. A deploy key for the Pi to push `device-data` (you add it in the GitHub repo settings; phase 1).
-4. OK to spend ~1.5 h of Pi compile time building Python 3.11 without `ssl` (phase 0)?

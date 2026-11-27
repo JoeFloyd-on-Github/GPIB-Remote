@@ -14,7 +14,7 @@ DEFAULTS = {
     "boards": [{"board": 0, "backend": "linuxgpib"}],
     "data_dir": "/var/lib/gpibremote/data",
     "builtin_types": os.path.join(APP_DIR, "devices", "types"),
-    "git": {"enabled": True, "remote": None, "branch": "device-data", "push_delay": 10},
+    "git": {"enabled": True},
     "locks": {"idle_timeout": "15min"},
     "log_level": "INFO",
 }
@@ -38,6 +38,5 @@ def load(path=None, overrides=None):
         with open(path, encoding="utf-8") as fh:
             _merge(cfg, yaml.safe_load(fh) or {})
     _merge(cfg, overrides or {})
-    cfg["git"]["push_delay"] = parse_seconds(cfg["git"].get("push_delay"), 10.0)
     cfg["locks"]["idle_timeout"] = parse_seconds(cfg["locks"].get("idle_timeout"), 900.0)
     return cfg

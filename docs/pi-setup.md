@@ -61,6 +61,9 @@ Verified after a reboot: `/dev/gpib0` appears, and `pi` (no sudo) can query `*ID
 Verified: `*IDN?` from the PC through the service, and again after a reboot with no manual steps.
 To update the server: `git -C ~/GPIB-Remote pull && sudo ~/GPIB-Remote/deploy/install.sh`.
 
+The service has no GitHub access (no keys, no remote). Device data in `/var/lib/gpibremote/data`
+is saved to the repo's `device-data` branch from a PC with `scripts/save_device_data.py`.
+
 ## Quick test
 
 ```

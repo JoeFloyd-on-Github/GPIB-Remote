@@ -59,9 +59,7 @@ def make_bus(bcfg, registry):
 
 
 async def run(cfg):
-    g = cfg["git"]
-    registry = Registry(cfg["data_dir"], cfg["builtin_types"], g.get("remote"), g.get("branch", "device-data"),
-                        g["push_delay"], g.get("enabled", True))
+    registry = Registry(cfg["data_dir"], cfg["builtin_types"], cfg["git"].get("enabled", True))
     await asyncio.get_running_loop().run_in_executor(None, registry.load)
     buses = {b.get("board", 0): make_bus(b, registry) for b in cfg["boards"]}
     hub = Hub()
@@ -86,7 +84,6 @@ async def run(cfg):
         logging.info("shutting down")
         server.close()
         await manager.shutdown()
-        registry.git.stop()
         for bus in buses.values():
             bus.close()
 
