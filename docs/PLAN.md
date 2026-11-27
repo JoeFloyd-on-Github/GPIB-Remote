@@ -295,6 +295,13 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
   backend; simulator; bus worker; JSON Lines server with raw operations (`docs/protocol.md`);
   minimal `gpibctl`; offline package install; systemd service verified across a reboot.
   The HTTP/WebSocket stack choice (2.2) is still open; it's needed in phase 3.
+- Phase 1: **done 2026-11-27**, except pushing `device-data` to GitHub (waits for the deploy key).
+  Type format (`docs/device-type-format.md`) with validator; types for the E3631A (verified on the
+  bench), 6632A and 3457A (simulator only, `verified: false`), generic SCPI and raw; git-versioned
+  registry; instance runtime with polling, limits, error-queue checks, locks and safe state;
+  protocol and events (`docs/protocol.md`); type-driven simulator; 17 tests on PC and Pi;
+  hardware check `scripts/check_phase1.py`. Not done from the phase-1 list: SRQ-driven reads
+  (serial poll exists; waiting on SRQ comes with the slow-measurement types).
 
 ## 10. Decisions and open questions
 
