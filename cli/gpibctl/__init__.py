@@ -1,5 +1,7 @@
 """gpibctl: command-line client for the GPIB-Remote server (plain TCP, JSON Lines)."""
 
+__version__ = "0.2.0"
+
 import collections
 import getpass
 import json

@@ -9,13 +9,13 @@ Plain TCP (no TLS): for LAN or VPN use only.
 - [docs/pi-setup.md](docs/pi-setup.md): how the Pi, linux-gpib and the server runtime were set up
 - [docs/protocol.md](docs/protocol.md): the JSON Lines protocol on port 9000
 
-## Status: phase 1 (core server)
+## Status: phase 2 (CLI)
 
 The server runs on the Pi as a systemd service on TCP port 9000. It holds versioned device
 types (YAML) and device instances, controls instruments through their type (settings with
 limits, readouts polled for subscribers, actions), gives one client at a time a control lock,
-and pushes events to clients. Raw GPIB access is still available. The full CLI (phase 2) and the
-web client (phase 3) come next.
+and pushes events to clients. Raw GPIB access is still available. The `gpibctl` CLI does all of this from
+Windows, Linux or the Pi, including a menu mode and an interactive shell. The web client (phase 3) comes next.
 
 - [docs/device-type-format.md](docs/device-type-format.md): how to write a device type
 
@@ -35,10 +35,22 @@ tests/               unittest suite (runs against the simulator)
 From any PC with Python 3.9+ (no packages needed):
 
 ```
-cd cli
-python -m gpibctl --host 192.168.1.157 query 5 "*IDN?"
-python -m gpibctl --host 192.168.1.157 listeners
+python cli/gpibctl --host 192.168.1.157 config      # remember the server (~/.gpibctl.ini)
+python cli/gpibctl ls                                # instruments, types, lock state
+python cli/gpibctl state bench-psu -r                # every setting and reading, read fresh
+python cli/gpibctl set bench-psu P6V.voltage 5 P6V.current 0.2
+python cli/gpibctl get bench-psu P6V.v_meas
+python cli/gpibctl watch bench-psu                   # live readings (Ctrl-C to stop)
+python cli/gpibctl menu bench-psu                    # menu-driven control, with the lock
+python cli/gpibctl shell                             # one connection; `lock` lasts until you quit
+python cli/gpibctl type show agilent.e3631a          # what a type offers
+python cli/gpibctl inst create psu2 hp.6632a 6       # add an instrument
+python cli/gpibctl query 5 "*IDN?"                   # raw GPIB
+python cli/gpibctl -h                                # everything else
 ```
+
+On the Pi: `/opt/gpibremote/venv/bin/python /opt/gpibremote/app/cli/gpibctl ls`.
+`--host`/`--port`, then `GPIBREMOTE_HOST`/`GPIBREMOTE_PORT`, then `~/.gpibctl.ini` choose the server.
 
 Or with no client at all: `nc 192.168.1.157 9000` and type, one per line:
 

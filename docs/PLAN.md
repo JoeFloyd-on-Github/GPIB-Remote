@@ -303,6 +303,16 @@ Each phase ends with a hardware test on the Pi and an update to the docs.
   protocol and events (`docs/protocol.md`); type-driven simulator; 17 tests on PC and Pi;
   hardware check `scripts/check_phase1.py`. Not done from the phase-1 list: SRQ-driven reads
   (serial poll exists; waiting on SRQ comes with the slow-measurement types).
+- Phase 2: **done 2026-11-27.** `gpibctl` (standard library only): `ls`, `types`, `info`, `state`,
+  `get`/`set`, `do`, `watch`, `lock`/`unlock`/`locks`, `type show/yaml/validate/push/history`,
+  `inst show/create/update/delete/identify/history`, raw `query`/`write`/`read`/`poll`/`clear`/
+  `local`/`trigger`/`listeners`, `config` for the default server; an interactive `shell` on one
+  connection (locks last until you leave); and `menu`, which walks the type's menu tree (one submenu
+  per channel), prompts with ranges and units, confirms dangerous actions, takes the lock and offers
+  to break someone else's. 24 tests; checked from Windows against the E3631A on the Pi (output left
+  off). Differences from 6.1: `set` needs no lock while nobody holds one (the phase-1 lock rules),
+  so it doesn't take one; raw is `query 5 "*IDN?"`; `scan` comes with the safe bus scan (phase 5)
+  and `trace` with phase 4.
 
 ## 10. Decisions and open questions
 
