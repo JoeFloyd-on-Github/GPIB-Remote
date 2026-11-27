@@ -1,0 +1,9 @@
+id: bench-psu
+name: Bench PSU (E3631A)
+type: agilent.e3631a@1.0.0
+address:
+  board: 0
+  pad: 5
+  sad: 0
+notes: Bench supply used for development
+revision: 1
