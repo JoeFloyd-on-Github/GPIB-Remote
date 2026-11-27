@@ -1,0 +1,5 @@
+# Everything runs on Linux (the Pi): keep LF line endings in the repo and in checkouts.
+* text=auto eol=lf
+*.png binary
+*.tgz binary
+*.whl binary

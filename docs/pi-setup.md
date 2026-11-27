@@ -42,6 +42,25 @@ Host: `192.168.1.157`, user `pi` (SSH key login).
 
 Verified after a reboot: `/dev/gpib0` appears, and `pi` (no sudo) can query `*IDN?`.
 
+## Server runtime (phase 0, 2026-11-27)
+
+9. **Python 3.11.18** built from source by `deploy/build-python.sh` into `/opt/gpibremote/python`
+   (tarball downloaded on the PC and copied over). Extra build deps: `libffi-dev libbz2-dev
+   liblzma-dev libreadline-dev libncursesw5-dev libsqlite3-dev libgdbm-dev uuid-dev`.
+   gcc 4.9.2 handles `-std=c11` fine. Took ~1 h 20 min. Not built, as intended: `_ssl`,
+   `_hashlib` (hashlib uses its built-in implementations) and `_tkinter`.
+10. **Packages offline:** `python deploy/fetch_packages.py` on the PC fills `deploy/packages/`
+    (pure wheels or sdists, sha256-checked); `install.sh` installs them with
+    `pip --no-index --find-links`. PyYAML 6.0.3 builds in pure-Python mode.
+11. **Service:** `sudo deploy/install.sh` from a checkout (`~/GPIB-Remote`):
+    - system user `gpibremote` (group `gpib`), app copied to `/opt/gpibremote/app`,
+      venv in `/opt/gpibremote/venv`, data dir `/var/lib/gpibremote` (phase 1);
+    - `gpibremote.service` enabled; it waits up to 30 s for `/dev/gpib0`, then listens on TCP 9000.
+    - Logs, including the audit log: `journalctl -u gpibremote`.
+
+Verified: `*IDN?` from the PC through the service, and again after a reboot with no manual steps.
+To update the server: `git -C ~/GPIB-Remote pull && sudo ~/GPIB-Remote/deploy/install.sh`.
+
 ## Quick test
 
 ```

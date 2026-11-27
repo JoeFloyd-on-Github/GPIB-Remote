@@ -290,6 +290,12 @@ tests/
 
 Each phase ends with a hardware test on the Pi and an update to the docs.
 
+**Progress**
+- Phase 0: **done 2026-11-27.** Python 3.11.18 (no ssl) in `/opt/gpibremote`; ctypes linux-gpib
+  backend; simulator; bus worker; JSON Lines server with raw operations (`docs/protocol.md`);
+  minimal `gpibctl`; offline package install; systemd service verified across a reboot.
+  The HTTP/WebSocket stack choice (2.2) is still open; it's needed in phase 3.
+
 ## 10. Decisions and open questions
 
 Decided (2026-11-26):

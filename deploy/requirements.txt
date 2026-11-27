@@ -1,0 +1,3 @@
+# Server dependencies: pure Python only, installed offline on the Pi (see fetch_packages.py).
+# PyYAML builds without libyaml/Cython in pure mode (device-type files, phase 1).
+PyYAML==6.0.3
