@@ -7,6 +7,13 @@ listen:
   host: 0.0.0.0
   port: 9000
 
+web:                    # browser client and WebSocket (same messages as port 9000) at /ws
+  enabled: true
+  host: 0.0.0.0
+  port: 8080
+  # Pages from other origins may not open /ws. Add one here to allow it, e.g. a reverse proxy:
+  # allowed_origins: ['http://bench.example:80']
+
 boards:
   - board: 0            # /dev/gpib0 (NI GPIB-USB-HS)
     backend: linuxgpib

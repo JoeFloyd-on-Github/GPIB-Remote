@@ -15,6 +15,7 @@ from .protocol import Dispatcher
 from .registry import Registry
 from .runtime import Hub, Manager
 from .tcp import serve
+from .web import serve_web
 
 DEFAULT_CONFIG = "/etc/gpibremote/server.yaml"
 
@@ -25,6 +26,8 @@ def parse_args(argv=None):
     ap.add_argument("--backend", choices=["linuxgpib", "sim"], help="override every board's backend")
     ap.add_argument("--host", help="listen address (plain TCP, LAN/VPN only)")
     ap.add_argument("--port", type=int)
+    ap.add_argument("--web-port", type=int, help="web client port (default 8080)")
+    ap.add_argument("--no-web", action="store_true", help="don't serve the web client")
     ap.add_argument("--data-dir", help="where instances and added types are kept (a git repo)")
     ap.add_argument("--no-git", action="store_true", help="don't version the data directory")
     ap.add_argument("--log-level")
@@ -36,6 +39,9 @@ def build_config(args):
     over = {}
     if args.host or args.port:
         over["listen"] = {k: v for k, v in (("host", args.host), ("port", args.port)) if v}
+    if args.web_port or args.no_web:
+        over["web"] = {k: v for k, v in (("port", args.web_port), ("enabled", False if args.no_web else None))
+                       if v is not None}
     if args.data_dir:
         over["data_dir"] = args.data_dir
     if args.no_git:
@@ -66,6 +72,12 @@ async def run(cfg):
     manager = Manager(registry, buses, hub, cfg["locks"]["idle_timeout"])
     dispatcher = Dispatcher(buses, registry, manager, hub)
     server = await serve(dispatcher, cfg["listen"]["host"], cfg["listen"]["port"], hub, manager)
+    web = None
+    if cfg["web"].get("enabled", True):
+        w = cfg["web"]
+        web = await serve_web(dispatcher, w["host"], w["port"], w["root"], hub, manager,
+                              w.get("allowed_origins") or ())
+        logging.info("web client on http://%s:%d/ (files %s)", w["host"], w["port"], w["root"])
     manager.start()
     logging.info("gpibremote %s listening on %s:%d; boards %s; data %s", __version__,
                  cfg["listen"]["host"], cfg["listen"]["port"],
@@ -83,6 +95,8 @@ async def run(cfg):
     finally:
         logging.info("shutting down")
         server.close()
+        if web is not None:
+            web.close()
         await manager.shutdown()
         for bus in buses.values():
             bus.close()

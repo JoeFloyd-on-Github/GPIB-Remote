@@ -11,6 +11,8 @@ APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file
 
 DEFAULTS = {
     "listen": {"host": "0.0.0.0", "port": 9000},
+    "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "root": os.path.join(APP_DIR, "web"),
+            "allowed_origins": []},
     "boards": [{"board": 0, "backend": "linuxgpib"}],
     "data_dir": "/var/lib/gpibremote/data",
     "builtin_types": os.path.join(APP_DIR, "devices", "types"),

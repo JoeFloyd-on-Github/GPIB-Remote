@@ -155,7 +155,7 @@ class Dispatcher:
     async def op_hello(self, session, req):
         session.client = str(req.get("client", ""))[:64]
         session.user = str(req.get("user", ""))[:64]
-        session.host = str(req.get("host", ""))[:64]
+        session.host = str(req.get("host") or session.peer.rsplit(":", 1)[0])[:64]
         return {"server": "gpibremote", "version": __version__, "protocol": PROTOCOL_VERSION,
                 "host": socket.gethostname(), "session": session.id}
 
@@ -167,7 +167,8 @@ class Dispatcher:
                 "uptime": round(time.time() - self.started, 1),
                 "boards": [b.backend.info() for b in self.buses.values()]}
         if self.registry is not None:
-            info["sessions"] = [{"id": s.id, "who": str(s.who), "peer": s.peer} for s in self.hub.sessions]
+            info["sessions"] = [{"id": s.id, "who": str(s.who), "peer": s.peer,
+                                 "client": s.client, "transport": s.transport} for s in self.hub.sessions]
         return info
 
     # -- types --------------------------------------------------------------
