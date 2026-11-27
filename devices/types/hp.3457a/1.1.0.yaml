@@ -1,0 +1,142 @@
+schema: 1
+type: hp.3457a
+version: '1.1.0'
+title: HP 3457A 7.5-Digit Multimeter
+manufacturer: Hewlett-Packard
+model: 3457A
+verified: false         # written from the manual; not yet tried on the bench unit
+description: >
+  Pre-SCPI HP-IB multimeter (HP 3457 command language). Settings can't be read back reliably,
+  so the server shows the last value it set (marked "assumed"). A reading is taken with
+  TRIG SGL, which leaves the meter in trigger-hold.
+references:
+  - HP 3457A Operating, Programming and Configuration Manual
+
+connection:
+  eos: "\n"
+  write_termination: "\n"
+  timeout: 10s          # slow integration times (NPLC 100) take seconds per reading
+
+identify:
+  probe: 'ID?'          # answers 'HP3457A'
+  match: '3457A'
+
+errors:
+  query: 'ERR?'         # error register; 0 = no error
+  none: '^\s*\+?0\s*$'
+  check_after_set: false
+
+init: ['END ALWAYS']    # EOI on every reading, so reads end cleanly
+
+controls:
+  function:
+    kind: enum
+    label: Function
+    set: '{value}'
+    options:
+      DCV:   {label: DC volts}
+      ACV:   {label: AC volts}
+      ACDCV: {label: AC+DC volts}
+      OHM:   {label: 2-wire ohms}
+      OHMF:  {label: 4-wire ohms}
+      DCI:   {label: DC current}
+      ACI:   {label: AC current}
+      ACDCI: {label: AC+DC current}
+      FREQ:  {label: Frequency}
+      PER:   {label: Period}
+  autorange:
+    kind: bool
+    label: Autorange
+    set: 'ARANGE {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+  range:
+    kind: number
+    label: Range (max expected value)
+    description: Sets a fixed range for the present function and turns autorange off.
+    min: 0
+    max: 3000000000
+    set: 'RANGE {value}'
+  nplc:
+    kind: number
+    label: Integration (power-line cycles)
+    min: 0.0005
+    max: 100
+    set: 'NPLC {value}'
+  autozero:
+    kind: enum
+    label: Autozero
+    set: 'AZERO {value}'
+    options:
+      'ON':   {label: 'On'}
+      'OFF':  {label: 'Off'}
+      'ONCE': {label: Once}
+  terminals:
+    kind: enum
+    label: Input terminals
+    set: 'TERM {value}'
+    options:
+      FRONT: {label: Front}
+      REAR:  {label: Rear}
+  offset_comp:
+    kind: bool
+    label: Offset compensation
+    description: >
+      OHM/OHMF only, ranges up to 100 kohm: each reading is taken with the current source on and
+      off and the difference used, cancelling thermal EMFs in the leads and the sample.
+    set: 'OCOMP {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+  display:
+    kind: bool
+    label: Front display
+    set: 'DISP {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+
+readouts:
+  reading:
+    label: Reading
+    query: 'TRIG SGL'   # take one reading and return it
+    parse: number
+    poll: 2s
+
+actions:
+  reset:
+    label: Reset
+    send: ['RESET', 'END ALWAYS']
+    confirm: true
+  autocal_ohms:
+    label: Auto-calibrate (ohms)
+    description: ACAL OHMS. The meter is busy for about a minute; wait before the next command.
+    send: ['ACAL OHMS']
+    confirm: true
+  autocal_all:
+    label: Auto-calibrate (all)
+    description: ACAL ALL. The meter is busy for several minutes; wait before the next command.
+    send: ['ACAL ALL']
+    confirm: true
+  trigger_auto:
+    label: Free-run triggering (front panel)
+    send: ['TRIG AUTO']
+
+menu:
+  - Measure: [function, autorange, range, nplc, reading]
+  - Input: [terminals, autozero, offset_comp]
+  - System: [display, trigger_auto, autocal_ohms, autocal_all, reset]
+
+roles:
+  meter:
+    function: function
+    functions: {dcv: DCV, acv: ACV, acdcv: ACDCV, dci: DCI, aci: ACI, acdci: ACDCI, ohm2: OHM, ohm4: OHMF,
+                freq: FREQ, period: PER}
+    reading: reading
+    range: range
+    autorange: autorange
+    nplc: nplc
+    autozero: autozero
+    offset_comp: offset_comp
+    autocal: autocal_ohms
+    reset: reset
+
+sim:
+  identity: 'HP3457A'
+  readouts:
+    reading: {value: 1.2345678, noise: 0.0000005}

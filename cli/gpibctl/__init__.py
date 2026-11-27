@@ -1,4 +1,8 @@
-"""gpibctl: command-line client for the GPIB-Remote server (plain TCP, JSON Lines)."""
+"""gpibctl: command-line client for the GPIB-Remote server (plain TCP, JSON Lines).
+
+`Client` is the protocol connection. Scripts (and the CLI's commands) use the API built on it,
+`gpibctl.api` (docs/api.md).
+"""
 
 __version__ = "0.3.0"
 

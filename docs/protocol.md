@@ -58,7 +58,7 @@ the holder disconnects, or after the server's idle timeout (default 15 min). `de
 | op | Parameters | Result |
 |---|---|---|
 | `types.list` | | `types`: `[{type, versions, latest, title, verified, builtin}]` |
-| `types.get` | `type` (or `type@version`), `version`, `format`: `model` (default), `yaml`, `both` | `ref`, `hash`, `model` and/or `yaml` |
+| `types.get` | `type` (or `type@version`), `version`, `format`: `model` (default), `yaml`, `both` | `ref`, `hash`, `model` (includes `roles`) and/or `yaml` |
 | `types.validate` | `yaml` | `valid`, `errors`, `ref`, `exists` |
 | `types.put` | `yaml`, `message` | `ref`, `hash`, `added` (false if identical to the stored version). Different content under an existing version is a `conflict` |
 | `types.history` | `type`, `limit` | `commits`: `[{rev, author, date, message}]` |

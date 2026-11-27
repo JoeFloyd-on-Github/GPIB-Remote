@@ -7,7 +7,8 @@ if not __package__:  # run as `python cli/gpibctl ...`
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     __package__ = "gpibctl"
 
-from gpibctl import Client, commands  # noqa: E402
+from gpibctl import commands  # noqa: E402
+from gpibctl.api import Bench  # noqa: E402
 
 
 def main(argv=None, out=None, inp=None):
@@ -22,9 +23,7 @@ def main(argv=None, out=None, inp=None):
         return exc.code or 0
 
     def connect():
-        c = Client(args.host, args.port)
-        c.hello("gpibctl")
-        return c
+        return Bench(args.host, args.port, client="gpibctl")
 
     ctx = commands.Context(connect, out=out, inp=inp)
     try:

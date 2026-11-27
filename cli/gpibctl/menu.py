@@ -26,13 +26,8 @@ class Menu:
         return self.ctx.inp(prompt).strip()
 
     def pull_events(self):
-        c = self.ctx.client
-        keep = []
-        while c.events:
-            ev = c.events.popleft()
+        for ev in self.ctx.bench.events(lambda e: e.get("instance") == self.iid):
             kind = ev.get("event")
-            if ev.get("instance") != self.iid:
-                continue
             if kind in ("reading", "state"):
                 self.state[ev["key"]] = {"value": ev["value"], "t": ev["t"], "source": ev.get("source", "read")}
             elif kind == "lock":
@@ -43,9 +38,6 @@ class Menu:
                                                     (": " + ev["reason"]) if ev.get("reason") else ""))
             elif kind == "status" and not ev.get("online"):
                 self.say("!! instrument not responding: %s" % ev.get("error"))
-            else:
-                keep.append(ev)
-        c.events.extend(keep)
 
     def default_menu(self):
         m = self.model
@@ -126,7 +118,7 @@ class Menu:
         if not ans:
             return
         try:
-            e = self.ctx.req("dev.set", instance=self.iid, key=key, value=ans)
+            e = self.dev.set_entry(key, ans)
             self.state[key] = e
             self.say("%s = %s" % (label, fmt.value(e["value"], d, e["source"])))
         except ServerError as exc:
@@ -137,7 +129,7 @@ class Menu:
         if key is None:
             return
         try:
-            e = self.ctx.req("dev.get", instance=self.iid, key=key)
+            e = self.dev.get_entry(key)
             self.state[key] = e
             self.say("%s = %s" % (d.get("label", name), fmt.value(e["value"], d, e["source"])))
         except ServerError as exc:
@@ -154,7 +146,7 @@ class Menu:
             self.say("cancelled")
             return
         try:
-            self.ctx.req("dev.action", instance=self.iid, action=name, channel=ch)
+            self.dev.action(name, ch)
             self.say("done: %s" % d.get("label", name))
             if d.get("refresh"):
                 self.refresh(quiet=True)
@@ -163,14 +155,12 @@ class Menu:
 
     def refresh(self, entries=None, channel=None, quiet=False):
         try:
-            r = self.ctx.req("dev.refresh", instance=self.iid)
-            self.state.update(r["state"])
+            self.state.update(self.dev.refresh())
             for label, kind, payload in self.expand(entries or [], channel):
                 if kind == "readouts":
                     name, d, ch = payload
                     if not d.get("per_channel") or ch:
-                        self.state[self.key(name, d, ch)] = self.ctx.req(
-                            "dev.get", instance=self.iid, key=self.key(name, d, ch))
+                        self.state[self.key(name, d, ch)] = self.dev.get_entry(self.key(name, d, ch))
             if not quiet:
                 self.say("re-read from the instrument")
         except ServerError as exc:
@@ -179,7 +169,7 @@ class Menu:
     def toggle_lock(self):
         try:
             if self.have_lock:
-                self.ctx.req("dev.unlock", instance=self.iid)
+                self.dev.unlock()
                 self.have_lock = False
                 self.say("lock released: you are observing")
             else:
@@ -189,7 +179,7 @@ class Menu:
 
     def take_lock(self):
         try:
-            self.ctx.req("dev.lock", instance=self.iid)
+            self.dev.lock()
             self.have_lock = True
         except ServerError as exc:
             if exc.code != "locked":
@@ -198,17 +188,18 @@ class Menu:
             self.say("%s is locked by %s." % (self.iid, holder))
             if self.ask("break their lock? [y/N] ").lower() in ("y", "yes"):
                 reason = self.ask("reason (sent to them): ") or "taken over from gpibctl menu"
-                self.ctx.req("dev.lock", instance=self.iid, force=True, reason=reason)
+                self.dev.lock(reason, force=True)
                 self.have_lock = True
             else:
                 self.say("observing only; changes will be refused while they hold the lock")
 
     # -- main loop ----------------------------------------------------------------
     def run(self):
-        st = self.ctx.req("dev.state", instance=self.iid)
+        self.dev = self.ctx.dev(self.iid)
+        st = self.dev.snapshot()
         self.model = self.ctx.model(st["type"])
         self.lock = st["summary"]["lock"]
-        self.state = dict(self.ctx.req("subscribe", instance=self.iid)["state"])
+        self.state = dict(self.dev.subscribe())
         if self.want_lock:
             self.take_lock()
         tree = self.model.get("menu") or self.default_menu()
@@ -264,9 +255,9 @@ class Menu:
         except KeyboardInterrupt:
             self.say("")
         finally:
-            for op in (("dev.unlock",) if self.have_lock else ()) + ("unsubscribe",):
+            for release in ((self.dev.unlock,) if self.have_lock else ()) + (self.dev.unsubscribe,):
                 try:
-                    self.ctx.req(op, instance=self.iid)
+                    release()
                 except Exception:
                     pass
         return 0

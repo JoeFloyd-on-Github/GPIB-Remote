@@ -25,11 +25,11 @@ Traces from scopes and analyzers (phase 4) come next.
 
 ```
 server/gpibremote/   server: backends/ (linux-gpib via ctypes, simulator), bus worker, protocol, TCP
-cli/gpibctl/         command-line client
+cli/gpibctl/         command-line client, and the test-script API (api.py)
 web/                 browser client (plain JavaScript, no build step), served on port 8080
 deploy/              Python build script, offline packages, install script, systemd unit
 devices/types/       built-in device types (YAML, one folder per type, one file per version)
-scripts/             hardware checks (test_e3631a.py)
+scripts/             hardware checks (test_e3631a.py), nickel_plating.py (plating experiment)
 tests/               unittest suite (runs against the simulator)
 ```
 
@@ -63,6 +63,35 @@ Or with no client at all: `nc 192.168.1.157 9000` and type, one per line:
 {"id":3,"op":"subscribe","instance":"bench-psu"}
 {"id":4,"op":"dev.set","instance":"bench-psu","key":"P6V.voltage","value":1.5}
 ```
+
+## Test scripts
+
+`cli/gpibctl/api.py` is a Python API for experiment scripts (docs/api.md): scan the bus, give
+instruments handles, configure them, lock them, and use them through standard supply, meter and
+thermometer roles, or raw GPIB. The `gpibctl` CLI itself is built on it.
+
+```python
+from gpibctl.api import Bench
+with Bench("192.168.1.157") as bench:
+    dmm = bench.meter("dmm-ohms")
+    dmm.configure("ohm4", range=30, nplc=100, offset_comp=True)
+    print(dmm.measure(10).mean)
+```
+
+`scripts/nickel_plating.py` is a guided bright-nickel plating experiment built on it:
+
+```
+python scripts/nickel_plating.py --setup      # scan the bus, assign instruments to roles (plating-bench.json)
+python scripts/nickel_plating.py              # calibrate, measure, plate with live logging, measure, report
+```
+
+Roles: supply, ohmmeter (4-wire Kelvin probe), thermometer (thermometer role, or a DMM on a type K
+thermocouple), and optionally a shunt DMM and a cell DMM. Steps: instrument check and locks;
+calibration (self-cal, probe zero, reference resistor, thermometer offset, current zero); sample
+and initial resistance at several probe positions; bath temperature wait and current choice;
+plating with time-coded CSV logging and alarms (output off at the end, on Ctrl-C or on error);
+final weight and resistance; a report comparing Faraday and 2D/1D resistance predictions with
+the measurements.
 
 ## Development
 

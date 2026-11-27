@@ -123,6 +123,46 @@ menu:                     # CLI menu tree: item names, or {label: [items]}
 panel: {...}              # front-panel layout for the web client (phase 5, not validated yet)
 ```
 
+## Roles (for test scripts)
+
+`roles` says what a type can stand in for, so a test script written against the API
+(`docs/api.md`) works with any instrument whose type declares the role. Each field names one of
+the type's own controls, readouts or actions; the server checks that they exist.
+
+```yaml
+roles:
+  supply:                       # Supply: set(voltage, current), on(), off(), measure_*()
+    voltage: voltage            # control: voltage setting (the compliance limit in CC use)
+    current: current            # control: current limit
+    output: output              # control: output on/off
+    v_meas: v_meas              # readout: measured voltage   (optional)
+    i_meas: i_meas              # readout: measured current   (optional)
+    ovp: ovp                    # control: overvoltage trip   (optional)
+    channel: P6V                # default channel for per-channel keys (optional)
+  meter:                        # Meter: configure(function, range, nplc, ...), read(), measure(n)
+    function: function          # enum control choosing the function
+    functions: {dcv: DCV, ohm4: OHMF}   # standard name -> option of that control
+    reading: reading            # readout: one fresh reading (required)
+    range: range                # control: fixed range (largest expected value)
+    autorange: autorange        # control: autorange on/off
+    nplc: nplc                  # control: integration time in power-line cycles
+    autozero: autozero          # control
+    offset_comp: offset_comp    # control: offset-compensated ohms
+    autocal: autocal_ohms       # action: self-calibration
+    reset: reset                # action
+  thermometer:                  # Thermometer: read() in C
+    temperature: temp           # readout (required)
+    unit: C                     # C, F or K (default C)
+```
+
+Standard meter function names: `dcv acv acdcv dci aci acdci ohm2 ohm4 freq period temp cap diode
+cont`. Required fields: supply `voltage current output`; meter `reading`; thermometer
+`temperature`. Types without `roles` still work with the API when their keys use the usual
+names (`voltage`, `current`, `output`, `v_meas`, `i_meas`; `function`, `reading`, ...).
+
+Adding a role changes the type, so it is a new version (the built-in E3631A, 6632A and 3457A
+gained theirs in 1.1.0; instances created on 1.0.0 keep working by convention).
+
 ## Simulation
 
 `sim` gives the simulator what it can't infer, so the type can be tested without hardware:

@@ -91,7 +91,7 @@ class TypeSimInstrument:
         self.t = dtype
         sim = dtype.raw.get("sim") or {}
         self.identity = sim.get("identity", dtype.title)
-        self.sim_readouts = sim.get("readouts") or {}
+        self.sim_readouts = dict(sim.get("readouts") or {})   # per instrument, so tests can change one
         self.channel = next(iter(dtype.channels), None)
         self.state = {}
         for name, d in dtype.controls.items():

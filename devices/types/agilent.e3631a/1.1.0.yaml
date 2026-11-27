@@ -1,0 +1,111 @@
+schema: 1
+type: agilent.e3631a
+version: '1.1.0'
+title: Agilent / HP E3631A Triple Output DC Power Supply
+manufacturer: Agilent (Hewlett-Packard)
+model: E3631A
+verified: true          # checked on the bench unit at GPIB address 5 (firmware 1.6-5.0-1.0)
+description: >
+  0-6 V / 5 A, 0-+25 V / 1 A and 0--25 V / 1 A outputs. One output on/off switch for all three.
+  The +/-25 V outputs can track each other.
+references:
+  - Agilent E3631A User's Guide, chapter 4 (remote interface reference)
+
+connection:
+  eos: "\n"             # responses end with LF
+  write_termination: "\n"
+  timeout: 3s
+
+identify:
+  probe: '*IDN?'
+  match: '^(HEWLETT-PACKARD|Agilent Technologies|Keysight Technologies),E3631A,'
+
+errors:
+  query: 'SYST:ERR?'
+  none: '^\+?0,'
+  check_after_set: true   # read the error queue after every set and report errors to the client
+
+# Note: SYST:LOC / SYST:REM are RS-232 only on this unit (error +514); the server uses GPIB GTL instead.
+
+channels:
+  select: 'INST:SEL {channel}'
+  list:
+    P6V:  {label: '+6V',  vmin: 0,      vmax: 6.18,  imax: 5.15}
+    P25V: {label: '+25V', vmin: 0,      vmax: 25.75, imax: 1.03}
+    N25V: {label: '-25V', vmin: -25.75, vmax: 0,     imax: 1.03}
+
+controls:
+  output:
+    kind: bool
+    label: Output
+    description: All three outputs on or off together.
+    set: 'OUTP {value}'
+    get: 'OUTP?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  tracking:
+    kind: bool
+    label: Track +/-25V
+    set: 'OUTP:TRAC {value}'
+    get: 'OUTP:TRAC?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  voltage:
+    kind: number
+    per_channel: true
+    label: Voltage
+    unit: V
+    resolution: 0.001
+    min: '{channel.vmin}'
+    max: '{channel.vmax}'
+    set: 'VOLT {value}'
+    get: 'VOLT?'
+  current:
+    kind: number
+    per_channel: true
+    label: Current limit
+    unit: A
+    resolution: 0.001
+    min: 0
+    max: '{channel.imax}'
+    set: 'CURR {value}'
+    get: 'CURR?'
+
+readouts:
+  v_meas:
+    per_channel: true
+    label: Measured voltage
+    unit: V
+    query: 'MEAS:VOLT? {channel}'   # names the channel, so no INST:SEL (front-panel selection untouched)
+    poll: 3s
+  i_meas:
+    per_channel: true
+    label: Measured current
+    unit: A
+    query: 'MEAS:CURR? {channel}'
+    poll: 3s
+
+actions:
+  reset:
+    label: Reset (*RST)
+    description: Outputs off, all settings to power-on defaults.
+    send: ['*RST']
+    confirm: true
+    refresh: true
+  clear_status:
+    label: Clear status and errors
+    send: ['*CLS']
+
+safe_off: ['OUTP OFF']
+
+roles:
+  supply: {voltage: voltage, current: current, output: output, v_meas: v_meas, i_meas: i_meas, channel: P6V}
+
+menu:
+  - Output: [output, tracking]
+  - '{channel}': [voltage, current, v_meas, i_meas]
+  - System: [reset, clear_status]
+
+sim:
+  identity: 'HEWLETT-PACKARD,E3631A,0,1.6-5.0-1.0'
+  readouts:
+    v_meas: {follows: voltage, when: output}
+    i_meas: {value: 0.0}

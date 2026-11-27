@@ -246,7 +246,7 @@ class DeviceType:
                             for k, v in self.actions.items()},
                 "menu": self.raw.get("menu") or [], "panel": self.raw.get("panel"),
                 "identify": {"probe": self.probe, "match": self.match},
-                "has_safe_off": bool(self.safe_off)}
+                "has_safe_off": bool(self.safe_off), "roles": self.raw.get("roles") or {}}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -257,6 +257,71 @@ def _check_template(errors, path, tpl, allowed):
     for field in re.findall(r"\{([^{}:!]*)", tpl):
         if field.split(".")[0] not in allowed:
             errors.append("%s: unknown placeholder {%s} (allowed: %s)" % (path, field, ", ".join(allowed)))
+
+
+# Roles: what a type can stand in for in a test script (see docs/device-type-format.md, "Roles").
+# Each field names one of the type's controls (c), readouts (r) or actions (a).
+ROLE_FIELDS = {
+    "supply": {"voltage": "c", "current": "c", "output": "c", "v_meas": "r", "i_meas": "r",
+               "ovp": "c", "channel": None},
+    "meter": {"function": "c", "functions": None, "reading": "r", "range": "c", "autorange": "c",
+              "nplc": "c", "autozero": "c", "offset_comp": "c", "autocal": "a", "reset": "a"},
+    "thermometer": {"temperature": "r", "unit": None},
+}
+ROLE_REQUIRED = {"supply": ("voltage", "current", "output"), "meter": ("reading",),
+                 "thermometer": ("temperature",)}
+METER_FUNCTIONS = ("dcv", "acv", "acdcv", "dci", "aci", "acdci", "ohm2", "ohm4", "freq", "period",
+                   "temp", "cap", "diode", "cont")
+
+
+def _check_roles(e, raw, channels):
+    roles = raw.get("roles")
+    if roles is None:
+        return
+    if not isinstance(roles, dict):
+        e.append("roles: must be a mapping")
+        return
+    sections = {"c": raw.get("controls") or {}, "r": raw.get("readouts") or {}, "a": raw.get("actions") or {}}
+    what = {"c": "control", "r": "readout", "a": "action"}
+    for role, spec in roles.items():
+        p = "roles.%s" % role
+        fields = ROLE_FIELDS.get(role)
+        if fields is None:
+            e.append("%s: unknown role (one of %s)" % (p, ", ".join(ROLE_FIELDS)))
+            continue
+        if not isinstance(spec, dict):
+            e.append("%s: must be a mapping" % p)
+            continue
+        for f in ROLE_REQUIRED[role]:
+            if f not in spec:
+                e.append("%s.%s: required" % (p, f))
+        for f, v in spec.items():
+            if f not in fields:
+                e.append("%s.%s: unknown field (one of %s)" % (p, f, ", ".join(fields)))
+                continue
+            sec = fields[f]
+            if sec:
+                if not isinstance(v, str) or v not in (sections[sec] if isinstance(sections[sec], dict) else {}):
+                    e.append("%s.%s: must name one of the type's %ss" % (p, f, what[sec]))
+            elif f == "channel":
+                if v not in channels:
+                    e.append("%s.channel: not a listed channel" % p)
+            elif f == "unit":
+                if v not in ("C", "F", "K"):
+                    e.append("%s.unit: C, F or K" % p)
+            elif f == "functions":
+                fn = (raw.get("controls") or {}).get(spec.get("function")) or {}
+                opts = fn.get("options") or {}
+                if not isinstance(v, dict):
+                    e.append("%s.functions: a mapping of standard name to option" % p)
+                    continue
+                for std, opt in v.items():
+                    if std not in METER_FUNCTIONS:
+                        e.append("%s.functions.%s: not a standard function (%s)" % (p, std, ", ".join(METER_FUNCTIONS)))
+                    elif opt not in opts:
+                        e.append("%s.functions.%s: %r is not an option of %s" % (p, std, opt, spec.get("function")))
+        if role == "meter" and "functions" in spec and "function" not in spec:
+            e.append("%s.function: required with functions" % p)
 
 
 def validate(raw):
@@ -272,7 +337,7 @@ def validate(raw):
         e.append("version: required, quoted semantic version like '1.0.0'")
     known = {"schema", "type", "version", "title", "manufacturer", "model", "description", "verified",
              "connection", "identify", "errors", "init", "channels", "controls", "readouts", "actions",
-             "safe_off", "menu", "panel", "sim", "notes", "references"}
+             "safe_off", "menu", "panel", "sim", "notes", "references", "roles"}
     for k in raw:
         if k not in known:
             e.append("%s: unknown top-level key" % k)
@@ -397,6 +462,7 @@ def validate(raw):
                 e.append("%s[%d]: an item name or {label: [items]}" % (path, i))
     if raw.get("menu") is not None:
         check_menu(raw["menu"], "menu")
+    _check_roles(e, raw, channels)
     for k in ("init", "safe_off"):
         v = raw.get(k)
         if v is not None and (not isinstance(v, list) or not all(isinstance(c, str) for c in v)):

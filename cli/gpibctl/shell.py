@@ -19,7 +19,7 @@ class Shell(cmd.Cmd):
         self.use_rawinput = ctx.inp is input
 
     def preloop(self):
-        info = self.ctx.req("server.info")
+        info = self.ctx.bench.info()
         self.ctx.say("connected: server %s, %d board(s)" % (info["version"], len(info["boards"])))
 
     def precmd(self, line):
