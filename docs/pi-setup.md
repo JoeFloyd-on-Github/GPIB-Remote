@@ -116,6 +116,7 @@ restores a voltage while the output stays off).
 ## Caveats
 
 - If the kernel is ever upgraded (`apt-get upgrade` of `raspberrypi-kernel`/`raspberrypi-bootloader`),
-  the GPIB modules must be rebuilt against the new kernel. Consider `sudo apt-mark hold raspberrypi-bootloader`.
+  the GPIB modules and the WiFi driver (8821au.ko, see WiFi above) must be rebuilt against the new
+  kernel. Consider `sudo apt-mark hold raspberrypi-kernel raspberrypi-bootloader`.
 - Jessie's Python is 3.4; a newer Python is built without `ssl` (the system uses plain TCP, no TLS),
   so Python packages are copied from the PC rather than fetched with pip. See `docs/PLAN.md`.
