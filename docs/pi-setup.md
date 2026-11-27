@@ -67,6 +67,43 @@ To update the server: `git -C ~/GPIB-Remote pull && sudo ~/GPIB-Remote/deploy/in
 The service has no GitHub access (no keys, no remote). Device data in `/var/lib/gpibremote/data`
 is saved to the repo's `device-data` branch from a PC with `scripts/save_device_data.py`.
 
+## WiFi (TP-Link Archer T2U Nano, 2026-11-27)
+
+The adapter is USB `2357:011e` (Realtek RTL8811AU, 802.11ac). Kernel 4.1 has no driver for it,
+so an out-of-tree driver is built, like linux-gpib.
+
+1. **Source:** [morrownr/8821au-20210708](https://github.com/morrownr/8821au-20210708) (branch `main`,
+   tarball sha256 `10bd2f76881c6ca96f56ac1e32d1f26a4443e8c279f68ddbb8552c88e5c61165`), downloaded on
+   the PC and copied to `~/wifi/` on the Pi (no TLS on the Pi). It officially supports kernels from 5.4.
+2. **Patch for kernel 4.1:** `strscpy()` arrived in kernel 4.3. In `os_dep/linux/os_intfs.c`, after
+   the existing `#define strlcpy strscpy` block:
+   ```c
+   /* GPIB-Remote: strscpy() arrived in kernel 4.3; older kernels have strlcpy(). */
+   #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0))
+   #define strscpy(dst, src, n) strlcpy(dst, src, n)
+   #endif
+   ```
+   Nothing else needed changing; gcc 4.9 only warns about newer `-Wno-...` options.
+3. **Build and install** (a few minutes after the first full build, which takes ~20 min):
+   ```
+   cd ~/wifi/8821au-20210708-main && make -j3
+   sudo install -m 644 8821au.ko /lib/modules/$(uname -r)/kernel/drivers/net/wireless/
+   sudo depmod -a && sudo modprobe 8821au
+   ```
+   `depmod` registers the USB alias, so the module loads at boot whenever the adapter is plugged in.
+4. **Network:** `/etc/network/interfaces` already had `allow-hotplug wlan0` with
+   `wpa-conf /etc/wpa_supplicant/wpa_supplicant.conf`. That file holds `country=US`, the
+   `ctrl_interface`/`update_config` lines and one `network={ssid=... psk=<hash>}` block, written with
+   `wpa_passphrase "SSID" | grep -v '^\s*#' | sudo tee -a ...` (the grep drops the plain-text
+   copy of the password). `wpa_passphrase` writes its error messages to stdout too, so a bad
+   attempt leaves a line that makes `wpa_supplicant` reject the whole file: check the file after
+   adding a network. Apply with `sudo ifdown wlan0; sudo ifup wlan0`; dhcpcd assigns the address.
+5. **Result:** `wlan0` at 192.168.1.28 (DHCP; reserve it on the router to keep it), alongside
+   `eth0` at 192.168.1.157, which keeps the lower route metric. The server answers on both:
+   `gpibctl --host 192.168.1.28 ls`, `http://192.168.1.28:8080/`.
+
+A kernel upgrade breaks this driver as well as linux-gpib (see Caveats).
+
 ## Quick test
 
 ```
