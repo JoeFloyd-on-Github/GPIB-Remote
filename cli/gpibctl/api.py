@@ -191,7 +191,8 @@ class Bench:
     __getitem__ = device
 
     def add(self, instance_id, type_ref, pad, board=0, sad=0, name=None, notes=None, verify=True,
-            limits=None, off_on_disconnect=False, poll_mode=None, overrides=None, safe_state=None):
+            limits=None, off_on_disconnect=False, poll_mode=None, overrides=None, safe_state=None,
+            restore=None):
         """Configure a new instrument and return its handle.
 
         type_ref: 'hp.3457a' (latest version) or 'hp.3457a@1.1.0'. With verify the server sends
@@ -199,6 +200,8 @@ class Bench:
         ({probe, response, match} or {error}). limits: {key: (min, max)}, merged into
         overrides. off_on_disconnect: the server turns the outputs off when the controlling
         client drops (shorthand for safe_state={"on_client_disconnect": "outputs_off"}).
+        restore: False stops the server reapplying settings when the instrument comes back
+        (types with `restore: true`; on by default).
         """
         type_ref = self.type_ref(type_ref)
         inst = {"id": instance_id, "name": name or instance_id, "type": type_ref,
@@ -217,6 +220,8 @@ class Bench:
             inst["safe_state"] = ss
         if poll_mode:
             inst["poll_mode"] = poll_mode
+        if restore is not None:
+            inst["restore"] = bool(restore)
         r = self.request("instances.create", instance=inst, verify=verify)
         d = self.device(instance_id)
         d.identify_result = r.get("identify")
@@ -521,7 +526,7 @@ class Device:
 
     # -- configuration ---------------------------------------------------------------------------
     def update(self, revision=None, **changes):
-        """Change the stored configuration: name, notes, overrides, safe_state, poll_mode, type
+        """Change the stored configuration: name, notes, overrides, safe_state, poll_mode, restore, type
         (another version), address. Every change is kept in the instance's history on the
         server. With `revision`, the change is refused (`conflict`) if someone changed the
         instance since that revision."""

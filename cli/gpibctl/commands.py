@@ -70,6 +70,8 @@ class Context:
                 self.say("!! your lock on %s expired (idle)" % ev["instance"])
             elif kind == "status" and ev.get("online") is False:
                 self.say("!! %s is not responding: %s" % (ev["instance"], ev.get("error")))
+            elif kind == "restored":
+                self.say("!! %s came back; the server reapplied: %s" % (ev["instance"], ", ".join(ev.get("keys") or [])))
 
     def close(self):
         if self._bench is not None:
@@ -116,15 +118,33 @@ def cmd_type_show(ctx, a):
         if kind == "enum":
             kind = "enum: " + "|".join(d.get("options") or {})
         rng = fmt.range_text(m, d, next(iter(m["channels"]), None)) if d.get("kind") == "number" else ""
-        rows.append(["control", ("<ch>." if d.get("per_channel") else "") + name, kind, rng,
-                     "" if d.get("get") else "set-only", d.get("label", "")])
+        if d.get("get"):
+            how = ""
+        elif d.get("readback"):
+            how = "read from " + d["readback"]["readout"]
+        elif d.get("infer"):
+            how = "inferred from " + d["infer"]["readout"]
+        else:
+            how = "set-only"
+        rows.append(["control", ("<ch>." if d.get("per_channel") else "") + name, kind, rng, how, d.get("label", "")])
     for name, d in m["readouts"].items():
-        rows.append(["readout", ("<ch>." if d.get("per_channel") else "") + name, d.get("unit", ""),
-                     ("poll %s" % d["poll"]) if d.get("poll") else "", "", d.get("label", "")])
+        if d.get("decode"):
+            how = "from " + d["decode"]["readout"]
+        elif d.get("unless"):
+            how = "not while " + ", ".join("%s %s" % (c, "/".join(map(str, v))) for c, v in d["unless"].items())
+        else:
+            how = ""
+        kind = d.get("unit", "") or ({"list": "list", "bool": "bool", "text": "text"}.get(d.get("parse"), ""))
+        rows.append(["readout", ("<ch>." if d.get("per_channel") else "") + name, kind,
+                     ("poll %s" % d["poll"]) if d.get("poll") else "", how, d.get("label", "")])
     for name, d in m["actions"].items():
         rows.append(["action", name, "", "", "confirm" if d.get("confirm") else "", d.get("label", "")])
     if rows:
         ctx.say(fmt.table(rows, ["", "KEY", "KIND/UNIT", "RANGE", "", "LABEL"]))
+    if m.get("restore"):
+        ctx.say("settings sent through the server are reapplied when the instrument comes back (restore)")
+    if m.get("display"):
+        ctx.say("display: %s (drawn by the web client; `get --full` prints traces)" % m["display"].get("kind"))
 
 
 def cmd_type_yaml(ctx, a):
@@ -190,6 +210,8 @@ def _instance_fields(a, inst):
         inst["notes"] = a.notes
     if a.poll_mode:
         inst["poll_mode"] = a.poll_mode
+    if a.restore is not None:
+        inst["restore"] = a.restore
     ss = dict(inst.get("safe_state") or {})
     if a.off_on_disconnect is not None:
         ss["on_client_disconnect"] = "outputs_off" if a.off_on_disconnect else "leave"
@@ -209,13 +231,17 @@ def cmd_inst_show(ctx, a):
     ctx.out.write(json.dumps(d.config, indent=2) + "\n")
     ctx.say("status: %s; lock: %s" % ({True: "online", False: "OFFLINE", None: "not contacted yet"}[s["online"]],
                                        fmt.lock_text(s["lock"])))
+    m = ctx.model(d.config["type"])
+    if m.get("restore"):
+        ctx.say("restore: %s" % ("off for this instance" if d.config.get("restore") is False
+                                 else "on (settings are reapplied when the instrument comes back)"))
 
 
 def cmd_inst_create(ctx, a):
     f = _instance_fields(a, {})
     d = ctx.bench.add(a.id, a.type, a.pad, board=a.board, sad=a.sad, name=f.get("name"), notes=f.get("notes"),
                       verify=not a.no_verify, poll_mode=f.get("poll_mode"), overrides=f.get("overrides"),
-                      safe_state=f.get("safe_state"))
+                      safe_state=f.get("safe_state"), restore=f.get("restore"))
     ctx.say("created %s (%s at %d:%d)" % (a.id, d.type, a.board, a.pad))
     ident = d.identify_result
     if ident:
@@ -292,10 +318,38 @@ def cmd_state(ctx, a):
     show_state(ctx, a.instance)
 
 
+def _trace_lines(ctx, iid, m, key, values):
+    """CSV lines for a list reading; with frequency for a network analyzer's traces."""
+    disp = m.get("display") or {}
+    ch, name = key.split(".", 1) if "." in key else (None, key)
+    sweep = None
+    if disp.get("kind") == "network_analyzer" and name in (disp.get("formatted"), disp.get("complex")):
+        dev = ctx.dev(iid)
+        k = (lambda n: "%s.%s" % (ch, n) if ch else n)
+        try:
+            start, stop = (dev.get_entry(k(disp[x]), fresh=False)["value"] for x in ("start", "stop"))
+            sweep = (float(start), float(stop))
+        except (KeyError, TypeError, ValueError, ServerError):
+            sweep = None
+    pairs = name == disp.get("complex")
+    rows = [values[i:i + 2] for i in range(0, len(values), 2)] if pairs else [[v] for v in values]
+    n = len(rows)
+    head = (["frequency_hz"] if sweep else ["point"]) + (["real", "imag"] if pairs else ["value"])
+    out = [",".join(head)]
+    for i, r in enumerate(rows):
+        x = ("%.0f" % (sweep[0] + (sweep[1] - sweep[0]) * i / (n - 1) if n > 1 else sweep[0])) if sweep else str(i)
+        out.append(",".join([x] + ["%.10g" % v for v in r]))
+    return out
+
+
 def cmd_get(ctx, a):
     st, m = ctx.instance_model(a.instance)
     for key in a.keys:
         e = ctx.dev(a.instance).get_entry(key, fresh=not a.cached)
+        if a.full and isinstance(e["value"], list):
+            for line in _trace_lines(ctx, a.instance, m, key, e["value"]):
+                ctx.say(line)
+            continue
         if a.bare:
             v = e["value"]
             ctx.say("" if v is None else ("on" if v else "off") if isinstance(v, bool) else v)
@@ -382,6 +436,8 @@ def cmd_watch(ctx, a):
                 ctx.say("%s  lock: %s" % (fmt.clock(), fmt.lock_text(ev["lock"])))
             elif kind == "status":
                 ctx.say("%s  %s" % (fmt.clock(), "online" if ev["online"] else "NOT RESPONDING: %s" % ev.get("error")))
+            elif kind == "restored":
+                ctx.say("%s  came back; settings reapplied: %s" % (fmt.clock(), ", ".join(ev.get("keys") or [])))
     except KeyboardInterrupt:
         pass
     finally:
@@ -460,6 +516,8 @@ def build_parser(prog="gpibctl", with_connection=True):
     sp.add_argument("keys", nargs="+", metavar="KEY")
     sp.add_argument("--cached", action="store_true", help="last known value, without asking the instrument")
     sp.add_argument("--bare", action="store_true", help="print only the value (for scripts)")
+    sp.add_argument("--full", action="store_true",
+                    help="print a trace (list reading) in full, as CSV; with frequency for analyzer sweeps")
     sp = add("set", cmd_set, "change settings: set INSTANCE KEY VALUE [KEY VALUE ...]")
     sp.add_argument("instance")
     sp.add_argument("pairs", nargs="+", metavar="KEY VALUE")
@@ -524,6 +582,9 @@ def build_parser(prog="gpibctl", with_connection=True):
         q.add_argument("--off-on-stop", dest="off_on_stop", action="store_true", default=None,
                        help="switch outputs off when the server stops")
         q.add_argument("--leave-on-stop", dest="off_on_stop", action="store_false")
+        q.add_argument("--restore", dest="restore", action="store_true", default=None,
+                       help="reapply settings when the instrument comes back (types with restore; the default)")
+        q.add_argument("--no-restore", dest="restore", action="store_false")
 
     i = isub.add_parser("show", help="an instance's stored settings")
     i.add_argument("instance")

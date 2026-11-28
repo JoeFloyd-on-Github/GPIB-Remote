@@ -48,6 +48,7 @@ python cli/gpibctl ls                                # instruments, types, lock 
 python cli/gpibctl state bench-psu -r                # every setting and reading, read fresh
 python cli/gpibctl set bench-psu P6V.voltage 5 P6V.current 0.2
 python cli/gpibctl get bench-psu P6V.v_meas
+python cli/gpibctl get vna CH1.trace --full > s21.csv  # a whole analyzer trace, with frequency
 python cli/gpibctl watch bench-psu                   # live readings (Ctrl-C to stop)
 python cli/gpibctl menu bench-psu                    # menu-driven control, with the lock
 python cli/gpibctl shell                             # one connection; `lock` lasts until you quit

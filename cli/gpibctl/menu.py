@@ -38,6 +38,8 @@ class Menu:
                                                     (": " + ev["reason"]) if ev.get("reason") else ""))
             elif kind == "status" and not ev.get("online"):
                 self.say("!! instrument not responding: %s" % ev.get("error"))
+            elif kind == "restored":
+                self.say("!! instrument came back; the server reapplied: %s" % ", ".join(ev.get("keys") or []))
 
     def default_menu(self):
         m = self.model

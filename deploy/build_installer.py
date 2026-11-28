@@ -11,7 +11,8 @@ Writes to dist/:
 The archive holds the tracked files of server/, cli/, web/, devices/, scripts/, docs/ and
 deploy/ (with the systemd unit, install.sh and uninstall.sh), the Python packages pinned in
 deploy/requirements.txt and build-requirements.txt (fetched into deploy/packages/ first unless
---no-fetch), README.md, and VERSION and BUILD-INFO files. Not the tests. Python itself and linux-gpib are built on the Pi (docs/pi-setup.md);
+--no-fetch), README.md, and VERSION and BUILD-INFO files. Not the tests or the PDF manuals
+(docs/devices/*/manuals). Python itself and linux-gpib are built on the Pi (docs/pi-setup.md);
 install.sh checks for them.
 
 Standard library only; runs on Windows, Linux or macOS (GitHub Actions uses ubuntu-latest).
@@ -97,7 +98,8 @@ def tracked_files():
     """Files git tracks under INCLUDE, as they are in the working tree (paths with '/')."""
     out = subprocess.check_output(["git", "ls-files", "-z", "--"] + [p.rstrip("/") for p in INCLUDE], cwd=ROOT)
     files = [f for f in out.decode("utf-8").split("\0") if f]
-    return sorted(f for f in files if os.path.isfile(os.path.join(ROOT, f)) and "__pycache__" not in f)
+    return sorted(f for f in files if os.path.isfile(os.path.join(ROOT, f)) and "__pycache__" not in f
+                  and not f.lower().endswith(".pdf"))   # the instrument manuals stay in the repo
 
 
 def packages(fetch):

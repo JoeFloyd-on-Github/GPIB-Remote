@@ -15,7 +15,12 @@ def value(v, item=None, source=None):
     item = item or {}
     if v is None:
         return "?"
-    if isinstance(v, bool):
+    if isinstance(v, list):     # a trace: say how big it is (get --full prints it)
+        nums = [x for x in v if isinstance(x, (int, float)) and not isinstance(x, bool)]
+        text = "%d values" % len(v)
+        if nums:
+            text += ", %.6g .. %.6g" % (min(nums), max(nums))
+    elif isinstance(v, bool):
         text = "ON" if v else "OFF"
     elif isinstance(v, (int, float)):
         d = decimals(item.get("resolution"))

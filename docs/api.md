@@ -52,7 +52,7 @@ used by convention if its keys have the usual names.
 | `locks()` | Held control locks: `{id: {holder, session, since, idle}}`. |
 | `listeners(board=0)` | Addresses where a device answers (no commands sent). |
 | `scan(board=0, probes=("*IDN?", "ID?"), timeout=1)` | Every address answering on the board: `Found(pad, instance, type, probe, response, types)`. Unconfigured addresses are asked each probe in turn; `types` lists the device types whose identify pattern matches. |
-| `add(id, type, pad, board=0, sad=0, name=, notes=, limits={key: (lo, hi)}, overrides=, safe_state=, poll_mode=, off_on_disconnect=False, verify=True)` | Configure an instrument and return its handle. `type` is `"hp.3457a"` (latest) or `"hp.3457a@1.1.0"`. The identify probe's answer is in the handle's `identify_result`. |
+| `add(id, type, pad, board=0, sad=0, name=, notes=, limits={key: (lo, hi)}, overrides=, safe_state=, poll_mode=, off_on_disconnect=False, restore=None, verify=True)` | Configure an instrument and return its handle. `type` is `"hp.3457a"` (latest) or `"hp.3457a@1.1.0"`. The identify probe's answer is in the handle's `identify_result`. `restore=False` stops the server reapplying settings when the instrument comes back (types with `restore`). |
 | `remove(id)` | Delete a configuration (history stays). |
 | `types()`, `type_model(ref)`, `type_ref(name)` | Device types, one type's full model, a name's latest `type@version`. |
 | `type_yaml(ref)`, `validate_type(text)`, `push_type(text, message)`, `type_history(type=None, limit=30)` | Type files: read, check, store a new type or version, history. |
@@ -78,7 +78,7 @@ used by convention if its keys have the usual names.
 | `subscribe()`, `unsubscribe()` | Receive this instrument's readings and changes as events (`Bench.events`, `wait_event`). |
 | `identify()` | `{probe, response, match}`: is the right instrument at the address? |
 | `lock(reason="", force=False)`, `unlock()`, `lock_holder()` | Exclusive control. `with dev.lock("why"):` releases at the end; the returned object's `info` is the lock. Others can still watch. `force` breaks someone else's lock (they are told why). |
-| `update(revision=None, **changes)` | Change the stored configuration: `name`, `notes`, `overrides`, `safe_state`, `poll_mode`, `type`, `address`. Kept in the instance's history. With `revision`, refused (`conflict`) if someone changed it since. |
+| `update(revision=None, **changes)` | Change the stored configuration: `name`, `notes`, `overrides`, `safe_state`, `poll_mode`, `restore`, `type`, `address`. Kept in the instance's history. With `revision`, refused (`conflict`) if someone changed it since. |
 | `set_limit(key, lo, hi)` | Narrow a control's range for everyone (e.g. a fixture's voltage cap). |
 | `history()` | Configuration changes. |
 | `raw`, `write(cmd)`, `query(cmd)` | Raw GPIB at this instrument's address. |
