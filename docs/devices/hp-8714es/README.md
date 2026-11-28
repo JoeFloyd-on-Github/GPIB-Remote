@@ -55,8 +55,9 @@ Type `hp.8714es` 1.3.0 (1.2.0 before the Programmer's Guide). Bench unit at GPIB
   then S11 -> SMIT). So change the measurement first, then the format; the type re-reads the
   format after a measurement change.
 - **No marker value in Smith format.** `CALC<n>:MARK1:Y?` answers 0 and queues
-  `-221,"Settings conflict; Marker value query not valid on this type of measurement."` It works
-  in polar and phase. Polling it in Smith format filled the error queue, which made later sets
+  `-221,"Settings conflict; Marker value query not valid on this type of measurement."` In polar
+  format it answers 0 with no error (an earlier note here said it worked there; it doesn't). It
+  works in phase and the other rectangular formats. Polling it in Smith format filled the error queue, which made later sets
   look as if they had failed; the type no longer polls it in Smith format, and the server empties
   the error queue before each set.
 - `CALC<n>:MARK1:FUNC:RES?` in Smith format: `-221,"Marker result query not valid on this type
@@ -115,4 +116,15 @@ Chapter references are to the guide.
   and shows the marker as R + jX (Smith) or magnitude and phase (polar), read from the analyzer.
 - IF bandwidth and points are lists of the allowed values; impedance magnitude (`MIMP`) format.
 - Status readouts: measuring, averaging complete, data questionable / limit fail, limit test.
+
+Checked on the bench unit (E.06.02) with type 1.3.0:
+
+- Binary traces: 1601 points in 0.4 s through the server (about 1.2 s in ASCII); 401 Smith
+  points as 802 values; `FORM:DATA?` is `ASC,+12` afterwards and the error queue is empty.
+- `*OPC?` after a setting answers in 0.1-0.6 s, also in continuous sweep with averaging on.
+- A single sweep (`ABOR;:INIT1:CONT OFF;:INIT1;*OPC?`) took 5.1 s with both channels on (2.3 s
+  sweeps), with averaging factors 64 and 16: it takes one sweep, not a full average. A much slower
+  sweep (15 Hz IF bandwidth, 1601 points) could take longer than the 30 s `complete` timeout; the
+  bus is busy while it waits.
+- Marker in Smith: `Y:RES?`, `Y:REAC?`, `Y:IND?`; in polar: `Y:MAGN?`, `Y:PHAS?`.
 

@@ -16,8 +16,8 @@ notes: >
   format is only valid when measuring Reflection"; polar works on both. The analyzer keeps a format
   for reflection and one for transmission, and changing the measurement brings back the one for
   its kind, so change the measurement first. The marker value query (CALC:MARK:Y?) is refused in
-  Smith format; the marker then reads as resistance and reactance, and in polar format as magnitude
-  and phase. Most settings are overlapped commands (they finish after the next command starts), so
+  Smith format and answers 0 in polar format; the marker reads as resistance and reactance in Smith
+  format and as magnitude and phase in polar format. Most settings are overlapped commands (they finish after the next command starts), so
   the server waits for *OPC? after them before reading them back. Traces are read in binary
   (FORM:DATA REAL,32), about 15 times faster than ASCII, and the format is set back to ASCII in the
   same message.
@@ -262,7 +262,7 @@ readouts:
     label: Marker 1 value
     description: In the channel's format (dB for log magnitude, degrees for phase, ...).
     query: 'CALC{channel.n}:MARK1:Y?'
-    unless: {format: [SMIT]}   # refused in Smith chart format (error -221)
+    unless: {format: [SMIT, POL]}   # Smith: refused (error -221); polar: answers 0 with no error
     poll: 2s
   marker_resistance:
     per_channel: true
