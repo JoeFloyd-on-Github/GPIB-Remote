@@ -110,8 +110,9 @@ class DeviceType:
         # readout name -> readouts decoded from it (readouts.*.decode), e.g. status bits
         self.decoded_by = {}
         for rname, d in self.readouts.items():
-            if isinstance(d.get("decode"), dict):
-                self.decoded_by.setdefault(d["decode"]["readout"], []).append(rname)
+            src = d.get("decode") or d.get("accuracy")
+            if isinstance(src, dict):
+                self.decoded_by.setdefault(src["readout"], []).append(rname)
         self.restore = bool(raw.get("restore", False))
         self.display = raw.get("display") or None
         self.init = list(raw.get("init") or [])
@@ -201,9 +202,12 @@ class DeviceType:
         found, value = _match_cases(spec, reading)
         return None if not found else self.coerce(d, value)
 
-    def decode_value(self, rname, reading):
-        """A decoded readout's value (readouts.X.decode) from its source readout's value."""
+    def decode_value(self, rname, reading, setting=None):
+        """A decoded readout's value (readouts.X.decode or .accuracy) from its source readout's value.
+        setting(control name) -> that control's state entry {value, t, source} or None."""
         d = self.readouts[rname]
+        if "accuracy" in d:
+            return self.accuracy_value(rname, reading, setting or (lambda name: None))
         spec = d["decode"]
         if "bits" in spec:     # the names of the bits that are set, e.g. "CV, NORM"
             if isinstance(reading, bool) or not isinstance(reading, int):
@@ -217,6 +221,85 @@ class DeviceType:
         if d.get("parse") == "bool":
             return self.coerce({"kind": "bool"}, value)
         return str(value)
+
+    def accuracy_value(self, rname, reading, setting):
+        """The uncertainty of a reading (readouts.X.accuracy): % of reading plus counts.
+
+        The table is picked by one control (the function), the counts column by another (the
+        integration time: the largest column at or below its value), the range from the range
+        control while a fixed range was set after the function and autorange, else from the
+        reading, and a row's band from a control (the expected AC frequency) or from the reading.
+        None when something needed isn't known or the spec doesn't cover it."""
+        spec = self.readouts[rname]["accuracy"]
+        if isinstance(reading, bool) or not isinstance(reading, (int, float)):
+            return None
+
+        def entry(key):
+            return setting(spec[key]) if spec.get(key) else None
+
+        def num(key):
+            e = entry(key)
+            return _number(e.get("value")) if e else None
+
+        e = entry("table")
+        name = None if e is None else e.get("value")
+        table = next((t for k, t in spec["tables"].items() if str(k).upper() == str(name).upper()), None)
+        if table is None:
+            return None
+        rows = list(table["rows"])
+        cols = table.get("columns") or {}
+        idx = per_range = None
+        if cols:
+            c = num("column")
+            if c is None:
+                return None
+            fits = [k for k in cols if float(k) <= c * (1 + 1e-9)]
+            if not fits:
+                return None
+            key = max(fits, key=float)
+            idx, per_range = list(cols).index(key), float(cols[key])
+        rng = None
+        ranges = sorted({float(r) for row in rows for r in _as_list(row.get("range"))})
+        if ranges:
+            rng = self._accuracy_range(spec, table, ranges, reading, entry)
+            if rng is None:
+                return None
+            rows = [r for r in rows if "range" not in r or rng in [float(x) for x in _as_list(r["range"])]]
+        if any("band" in r for r in rows):
+            f = abs(reading) if table.get("band_by") == "reading" else num("band")
+            if f is None:
+                return None
+            row = _pick_band([r for r in rows if "band" in r], f)
+        else:
+            row = rows[0] if rows else None
+        if row is None:
+            return None
+        u = abs(reading) * float(row.get("pct", 0)) / 100.0
+        if cols:
+            if row["counts"][idx] is None:      # the manual has no figure for this column
+                return None
+            u += float(row["counts"][idx]) * rng / per_range
+        return u
+
+    @staticmethod
+    def _accuracy_range(spec, table, ranges, reading, entry):
+        """The range a reading was taken on: a fixed range as set, else the smallest that holds it."""
+        over = float(table.get("overrange", spec.get("overrange", 1.0)))
+
+        def fit(x):
+            return next((r for r in ranges if abs(x) <= r * over * (1 + 1e-9)), None)
+        def when(e):    # update order from the runtime, else the time
+            return e.get("order", e.get("t")) or 0
+        fixed = entry("range")
+        if fixed and _number(fixed.get("value")) is not None:
+            later = []      # a function change or autorange on since then undoes a fixed range
+            for k in ("table", "autorange"):
+                e = entry(k)
+                if e and when(e) > when(fixed) and (k == "table" or e.get("value") is True):
+                    later.append(k)
+            if not later:
+                return fit(_number(fixed["value"])) or ranges[-1]
+        return fit(reading)
 
     def error_text(self, response):
         """An error-queue answer with the meaning of its code (errors.codes) added."""
@@ -255,8 +338,14 @@ class DeviceType:
         if kind == "enum":
             opts = d.get("options") or {}
             for name in opts:
-                if str(value).upper() == name.upper():
+                if str(value).upper() == str(name).upper():
                     return name
+            v = _number(value)
+            if v is not None:   # numeric options (integration times): 10.0 is '10'
+                for name in opts:
+                    n = _number(name)
+                    if n is not None and abs(n - v) <= 1e-9 * max(abs(n), abs(v)):
+                        return name
             raise ValueRejected("expected one of %s, got %r" % (", ".join(opts), value))
         return str(value)
 
@@ -341,6 +430,33 @@ class DeviceType:
                 "identify": {"probe": self.probe, "match": self.match},
                 "has_safe_off": bool(self.safe_off), "roles": self.raw.get("roles") or {},
                 "display": self.display, "restore": self.restore}
+
+
+def _number(v):
+    """v as a float, or None (bools and text that isn't a number)."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_list(v):
+    return [] if v is None else list(v) if isinstance(v, (list, tuple)) else [v]
+
+
+def _pick_band(rows, f):
+    """The row whose band [lo, hi] holds f; in a gap between bands, the next band up. Where bands
+    overlap, the one starting highest (the 3457A's fast-filter row from 400 Hz)."""
+    below = [r for r in rows if float(r["band"][0]) <= f]
+    if not below:
+        return None
+    row = max(below, key=lambda r: float(r["band"][0]))
+    if f <= float(row["band"][1]) * (1 + 1e-9):
+        return row
+    above = [r for r in rows if float(r["band"][0]) > f]
+    return min(above, key=lambda r: float(r["band"][0])) if above else None
 
 
 def _match_cases(spec, reading):
@@ -580,6 +696,123 @@ def _check_decode(e, p, d, readouts):
     _check_status(e, p, pseudo, readouts, "decode")
 
 
+def _check_conds(e, p, d, raw, per):
+    """unless / only: {control: [values]} on a readout or its `add`."""
+    ctrls = raw.get("controls") or {}
+    for cond in ("unless", "only"):
+        if cond not in d:
+            continue
+        un = d[cond]
+        if not isinstance(un, dict) or not un:
+            e.append("%s.%s: a mapping {control: [values]}" % (p, cond))
+            continue
+        for cname, values in un.items():
+            c = ctrls.get(cname)
+            if not isinstance(c, dict):
+                e.append("%s.%s: unknown control %r" % (p, cond, cname))
+                continue
+            if c.get("per_channel") and not per:
+                e.append("%s.%s.%s: a per-channel control needs a per-channel readout" % (p, cond, cname))
+            if not isinstance(values, list) or not values:
+                e.append("%s.%s.%s: a non-empty list of values" % (p, cond, cname))
+                continue
+            if c.get("kind") == "enum":
+                opts = {str(o).upper() for o in (c.get("options") or {})}
+                for v in values:
+                    if str(v).upper() not in opts:
+                        e.append("%s.%s.%s: %r is not an option" % (p, cond, cname, v))
+
+
+def _is_num(v, positive=False):
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and (v > 0 if positive else v >= 0)
+
+
+def _check_accuracy(e, p, d, raw):
+    """readouts.X.accuracy: an uncertainty computed from another readout and the settings."""
+    spec = d["accuracy"]
+    readouts, ctrls = raw.get("readouts") or {}, raw.get("controls") or {}
+    p += ".accuracy"
+    if d.get("query") or d.get("read") or d.get("poll") or d.get("decode"):
+        e.append("%s: not with query, read, poll or decode (it comes from its source readout)" % p)
+    if d.get("parse", "number") != "number":
+        e.append("%s: parse must be number" % p)
+    if not isinstance(spec, dict):
+        e.append("%s: a mapping {readout, table, tables, ...}" % p)
+        return
+    known = {"readout", "table", "column", "range", "autorange", "band", "overrange", "tables", "note"}
+    for k in sorted(set(spec) - known):
+        e.append("%s.%s: unknown key" % (p, k))
+    src = readouts.get(spec.get("readout"))
+    if not isinstance(src, dict):
+        e.append("%s.readout: no such readout %r" % (p, spec.get("readout")))
+    elif src.get("decode") or src.get("accuracy"):
+        e.append("%s.readout: %r is itself computed" % (p, spec.get("readout")))
+    elif bool(src.get("per_channel")) != bool(d.get("per_channel")):
+        e.append("%s.readout: per_channel must match" % p)
+    for k in ("table", "column", "range", "autorange", "band"):
+        if k in spec and spec[k] not in ctrls:
+            e.append("%s.%s: %r is not one of the type's controls" % (p, k, spec[k]))
+    if "table" not in spec:
+        e.append("%s.table: required (the control that picks the table)" % p)
+    if "overrange" in spec and not (_is_num(spec["overrange"]) and spec["overrange"] >= 1):
+        e.append("%s.overrange: a number >= 1" % p)
+    tables = spec.get("tables")
+    if not isinstance(tables, dict) or not tables:
+        e.append("%s.tables: a mapping {table control value: table}" % p)
+        return
+    topts = {str(o).upper() for o in ((ctrls.get(spec.get("table")) or {}).get("options") or {})}
+    for tname, t in tables.items():
+        tp = "%s.tables.%s" % (p, tname)
+        if topts and str(tname).upper() not in topts:
+            e.append("%s: %r is not an option of %s" % (tp, tname, spec.get("table")))
+        if not isinstance(t, dict):
+            e.append("%s: a mapping {columns, rows}" % tp)
+            continue
+        for k in sorted(set(t) - {"columns", "rows", "band_by", "note", "overrange"}):
+            e.append("%s.%s: unknown key" % (tp, k))
+        cols = t.get("columns")
+        if cols is not None:
+            if not isinstance(cols, dict) or not cols or not all(
+                    _is_num(k, True) and _is_num(v, True) for k, v in cols.items()):
+                e.append("%s.columns: a mapping {column control value: counts in one range}" % tp)
+                cols = None
+            elif "column" not in spec:
+                e.append("%s.column: required, since %s has columns" % (p, tname))
+        if "overrange" in t and not (_is_num(t["overrange"]) and t["overrange"] >= 1):
+            e.append("%s.overrange: a number >= 1" % tp)
+        if t.get("band_by") not in (None, "reading"):
+            e.append("%s.band_by: only 'reading'" % tp)
+        rows = t.get("rows")
+        if not isinstance(rows, list) or not rows:
+            e.append("%s.rows: a non-empty list" % tp)
+            continue
+        for i, r in enumerate(rows):
+            rp = "%s.rows[%d]" % (tp, i)
+            if not isinstance(r, dict):
+                e.append("%s: a mapping {range, band, pct, counts}" % rp)
+                continue
+            for k in sorted(set(r) - {"range", "band", "pct", "counts"}):
+                e.append("%s.%s: unknown key" % (rp, k))
+            if not _is_num(r.get("pct")):
+                e.append("%s.pct: required, %% of reading" % rp)
+            if "range" in r and not all(_is_num(x, True) for x in _as_list(r["range"])) or r.get("range") == []:
+                e.append("%s.range: a positive number or a list of them" % rp)
+            if cols:
+                if "range" not in r:
+                    e.append("%s.range: required with columns (counts are a fraction of the range)" % rp)
+                if not isinstance(r.get("counts"), list) or len(r["counts"]) != len(cols) or \
+                        not all(x is None or _is_num(x) for x in r["counts"]):
+                    e.append("%s.counts: one number (or null) per column (%d)" % (rp, len(cols)))
+            elif "counts" in r:
+                e.append("%s.counts: needs columns" % rp)
+            if "band" in r:
+                b = r["band"]
+                if not (isinstance(b, list) and len(b) == 2 and all(_is_num(x) for x in b) and b[0] < b[1]):
+                    e.append("%s.band: [low, high]" % rp)
+                elif t.get("band_by") != "reading" and "band" not in spec:
+                    e.append("%s.band: needs accuracy.band (a control) or band_by: reading" % p)
+
+
 def _check_display(e, raw):
     """display: what a client draws as the instrument's screen (kind network_analyzer)."""
     disp = raw.get("display")
@@ -759,37 +992,29 @@ def validate(raw):
                     elif v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
                         e.append("%s.%s: must be a number" % (p, b))
             elif section == "readouts":
-                if "decode" in d:
+                if "accuracy" in d:
+                    _check_accuracy(e, p, d, raw)
+                elif "decode" in d:
                     _check_decode(e, p, d, raw.get("readouts") or {})
                 elif not d.get("query") and not d.get("read"):
-                    e.append("%s: needs 'query', 'read: true' or 'decode'" % p)
+                    e.append("%s: needs 'query', 'read: true', 'decode' or 'accuracy'" % p)
+                if "overload" in d and not _is_num(d["overload"], True):
+                    e.append("%s.overload: a positive number (readings this large mean overload)" % p)
+                if "add" in d:
+                    add = d["add"]
+                    if not isinstance(add, dict) or not isinstance(add.get("query"), str) or \
+                            set(add) - {"query", "only", "unless"}:
+                        e.append("%s.add: a mapping {query, only?, unless?}" % p)
+                    else:
+                        _check_template(e, p + ".add.query", add["query"], allowed)
+                        _check_conds(e, p + ".add", add, raw, per)
+                    if not d.get("query") or d.get("parse", "number") != "number" or d.get("block"):
+                        e.append("%s.add: needs a query with parse: number" % p)
                 if d.get("query"):
                     _check_template(e, p + ".query", d["query"], allowed)
                 if "clear_srq" in d and not isinstance(d["clear_srq"], bool):
                     e.append("%s.clear_srq: true or false" % p)
-                for cond in ("unless", "only"):
-                    if cond not in d:
-                        continue
-                    un = d[cond]
-                    ctrls = raw.get("controls") or {}
-                    if not isinstance(un, dict) or not un:
-                        e.append("%s.%s: a mapping {control: [values]}" % (p, cond))
-                    else:
-                        for cname, values in un.items():
-                            c = ctrls.get(cname)
-                            if not isinstance(c, dict):
-                                e.append("%s.%s: unknown control %r" % (p, cond, cname))
-                                continue
-                            if c.get("per_channel") and not per:
-                                e.append("%s.%s.%s: a per-channel control needs a per-channel readout" % (p, cond, cname))
-                            if not isinstance(values, list) or not values:
-                                e.append("%s.%s.%s: a non-empty list of values" % (p, cond, cname))
-                                continue
-                            if c.get("kind") == "enum":
-                                opts = {str(o).upper() for o in (c.get("options") or {})}
-                                for v in values:
-                                    if str(v).upper() not in opts:
-                                        e.append("%s.%s.%s: %r is not an option" % (p, cond, cname, v))
+                _check_conds(e, p, d, raw, per)
                 if "block" in d:
                     if d["block"] not in DeviceType.BLOCK_FORMATS:
                         e.append("%s.block: one of %s" % (p, ", ".join(DeviceType.BLOCK_FORMATS)))

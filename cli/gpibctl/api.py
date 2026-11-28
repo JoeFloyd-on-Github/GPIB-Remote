@@ -461,7 +461,11 @@ class Device:
         return self.bench.request("dev.get", instance=self.id, key=key, fresh=fresh)
 
     def get_float(self, key, fresh=True):
-        return float(self.get(key, fresh))
+        """A readout as a number; an overload (OVLD) is infinity."""
+        v = self.get(key, fresh)
+        if v == "OVLD":
+            return math.inf
+        return float(v)
 
     def set(self, key, value):
         """Set a control; returns the value read back (or as set, if the type can't read it)."""

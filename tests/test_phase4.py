@@ -211,6 +211,63 @@ class Phase4(unittest.TestCase):
         self.assertEqual(self.a.request("dev.get", instance="vna", key="questionable_bits")["value"], "ok")
 
 
+    def test_3457a_1_2_hires_overload_and_uncertainty(self):
+        bench = Bench("127.0.0.1", self.stack.port, user="tester")
+        try:
+            dev = bench.add("dmm", "hp.3457a@1.2.0", 22)
+            sim = self.stack.sim(22)
+            sim.sim_readouts["reading"] = {"value": 2.5, "add": 3e-8}
+            meter = bench.meter("dmm")
+            meter.configure("dcv", nplc=100.0)                 # a float names the option '100'
+            self.assertEqual(dev.get("nplc", fresh=False), "100")
+            with self.assertRaises(Exception) as cm:
+                meter.configure(nplc=0.5)
+            self.assertIn("expected one of", str(cm.exception))                       # not one of the meter's values
+            # NPLC 100: the HIRES digit is added, and DCV is specified (3 V range).
+            n = len(sim.log)
+            self.assertAlmostEqual(meter.read(), 2.50000003, places=9)
+            self.assertEqual(sim.log[n:], ["TRIG SGL", "RMATH HIRES"])
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.0017e-2 + 6e-6, places=10)
+            # A fixed range uses its own counts; autorange afterwards goes back to the reading's range.
+            dev.set("range", 300)
+            meter.read()
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.005e-2 + 6e-4, places=10)
+            dev.set("autorange", "on")
+            self.assertAlmostEqual(dev.get("uncertainty"), 2.5 * 0.0017e-2 + 6e-6, places=10)   # reads afresh
+            # NPLC 1: no HIRES, and that column's counts.
+            dev.set("nplc", 1)
+            n = len(sim.log)
+            self.assertAlmostEqual(meter.read(), 2.5)
+            self.assertEqual(sim.log[n:], ["TRIG SGL"])
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.0017e-2 + 7e-6, places=10)
+            # A figure the manual doesn't give (extended ohms at NPLC 0.0005) is blank.
+            meter.configure("ohm2", nplc=0.0005)
+            sim.sim_readouts["reading"] = {"value": 5e8}
+            meter.read()
+            self.assertIsNone(dev.get("uncertainty", fresh=False))
+            sim.sim_readouts["reading"] = {"value": 2.5}
+            # AC: the expected frequency picks the row; from 400 Hz the fast-filter row.
+            meter.configure("acv", nplc=1)
+            dev.set("ac_band", 60)
+            meter.read()
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.21e-2 + 1120e-6, places=10)
+            dev.set("ac_band", 1000)
+            dev.set("nplc", "0.1")
+            meter.read()
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.14e-2 + 550e-5, places=10)
+            # Overload: OVLD, infinity through the API, no uncertainty.
+            sim.sim_readouts["reading"] = {"value": 1e38}
+            self.assertEqual(dev.get("reading"), "OVLD")
+            self.assertIsNone(dev.get("uncertainty", fresh=False))
+            self.assertEqual(meter.read(), float("inf"))
+            # Reset: the meter's power-on settings are assumed.
+            dev.action("reset")
+            self.assertEqual(dev.get("nplc", fresh=False), "10")
+            self.assertEqual(dev.get("ac_band", fresh=False), 20)
+        finally:
+            bench.close()
+
+
 class Supply6632A(unittest.TestCase):
     """hp.6632a 1.4.0: status register decoded bit by bit (manual Table 6-4)."""
 
@@ -275,7 +332,8 @@ class Phase4Types(unittest.TestCase):
 
     def test_new_types_valid(self):
         for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0"),
-                     ("hp.8714es", "1.2.0"), ("hp.8714es", "1.3.0"), ("hp.6632a", "1.4.0")):
+                     ("hp.8714es", "1.2.0"), ("hp.8714es", "1.3.0"), ("hp.6632a", "1.4.0"),
+                     ("hp.3457a", "1.2.0")):
             self.assertEqual(validate(self.raw(t, v)), [], t)
 
     def bad(self, raw, msg):
@@ -323,6 +381,26 @@ class Phase4Types(unittest.TestCase):
         r = copy.deepcopy(raw)
         r["actions"]["clear"]["assumes"]["voltage"] = 99
         self.bad(r, "assumes.voltage")
+
+    def test_accuracy_validation(self):
+        raw = self.raw("hp.3457a", "1.2.0")
+        unc = lambda r: r["readouts"]["uncertainty"]["accuracy"]    # noqa: E731
+        for change, msg in (
+                (lambda r: unc(r).update(readout="nonesuch"), "no such readout"),
+                (lambda r: unc(r).update(band="nonesuch"), "not one of the type's controls"),
+                (lambda r: unc(r)["tables"]["DCV"]["rows"][0].update(counts=[1, 2]), "per column (6)"),
+                (lambda r: unc(r)["tables"].update(VOLTS=unc(r)["tables"]["DCV"]), "not an option of function"),
+                (lambda r: unc(r)["tables"]["ACV"]["rows"][0].update(band=[45, 20]), "band: [low, high]"),
+                (lambda r: unc(r).pop("band"), "needs accuracy.band"),
+                (lambda r: unc(r)["tables"]["DCV"]["rows"][0].pop("pct"), "pct: required"),
+                (lambda r: r["readouts"]["uncertainty"].update(poll="1s"), "not with query, read, poll"),
+                (lambda r: r["readouts"]["reading"].update(overload="big"), "overload: a positive number"),
+                (lambda r: r["readouts"]["reading"]["add"].update(only={"nplc": ["7"]}), "'7' is not an option"),
+                (lambda r: r["readouts"]["reading"].update(parse="text"), "add: needs a query with parse: number")):
+            r = copy.deepcopy(raw)
+            change(r)
+            with self.subTest(msg):
+                self.bad(r, msg)
 
     def test_display_validation(self):
         raw = self.raw("hp.8714es", "1.1.0")

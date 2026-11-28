@@ -196,6 +196,73 @@ The server reads until the whole block has arrived (reads end early wherever the
 EOS byte) and the terminator after it. Setting the data format and setting it back in the same
 message keeps other queries in ASCII.
 
+`overload: 1.0e+38` marks readings that large (either sign) as an overload: the readout's value is
+the text `OVLD` instead of the number (charts skip it; the Python API's `get_float` gives
+infinity). Write the exponent with a sign: YAML reads `1.0e38` as text.
+
+`add` sends a second query after the first, in the same bus operation, and adds its number to
+the reading. The 3457A keeps the extra (7.5th) digit of a reading at NPLC 10 or 100 in its HIRES
+register:
+
+```yaml
+  reading:
+    query: 'TRIG SGL'
+    overload: 1.0e+38
+    add:
+      query: 'RMATH HIRES'
+      only: {nplc: ['10', '100']}      # only / unless as for readouts; an unknown setting allows it
+      unless: {function: [FREQ, PER]}
+```
+
+### Uncertainty from the specifications
+
+A readout with `accuracy` is the uncertainty (+/-) of another readout's reading, worked out from
+the instrument's accuracy tables each time that reading is taken: % of reading plus counts. It
+has no query of its own; a get reads the source. It is blank (null) when a setting it needs isn't
+known, the reading is an overload, or the tables have no figure for the present settings.
+
+```yaml
+  uncertainty:
+    label: Uncertainty (+/-, 90 day)
+    parse: number
+    accuracy:
+      readout: reading
+      table: function       # control whose value picks the table
+      column: nplc          # control whose value picks the counts column (tables with columns)
+      range: range          # optional: the fixed-range control
+      autorange: autorange  # optional
+      band: ac_band         # optional: control whose value picks a row's band (AC frequency)
+      overrange: 1.01       # a range holds readings up to this times its value (default 1)
+      tables:
+        DCV:
+          columns: {100: 3000000}      # control value: counts in one range (range / count size)
+          rows:
+            - {range: 3, pct: 0.0017, counts: [6]}     # one count per column
+        ACV:
+          columns: {1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: [0.03, 0.3, 3, 30], band: [20, 45], pct: 0.75, counts: [2800, 290, 32, 7]}
+        FREQ:
+          band_by: reading                # the band is the reading itself
+          rows:
+            - {band: [10, 400], pct: 0.05}
+```
+
+- **Overrange:** a table can have its own `overrange` (the 3457A's AC ranges read to 108%).
+- **Missing figures:** a count of `null` means the manual gives no figure there; the readout is
+  blank.
+- **Column:** the largest column at or below the control's value (NPLC 10 uses the NPLC 1
+  column of an AC table). A table without a column at or below it gives no figure.
+- **Range:** the range control's value while it was set after both the table control and
+  autorange-on, since on most meters choosing a function turns autorange back on. Otherwise
+  the range is taken from the reading: the smallest range that holds it. Either way, the
+  smallest listed range at or above the value.
+- **Count size:** the range divided by the column's number. On the 3457A, a 6.5-digit count on
+  the 3 V range is 1 uV, which is 3 / 3,000,000.
+- **Band:** the row whose `[low, high]` holds the band value. In a gap between bands, the next
+  band up is used. Where bands overlap, the one starting highest is used (the 3457A's
+  fast-filter row from 400 Hz).
+
 ## Actions
 
 ```yaml
@@ -317,7 +384,7 @@ sim:
   identity: 'HEWLETT-PACKARD,E3631A,0,1.6-5.0-1.0'   # answer to the identify probe
   readouts:
     v_meas: {follows: voltage, when: output}         # same channel's setting while `output` is on
-    reading: {value: 1.2345678, noise: 0.0000005}
+    reading: {value: 1.2345678, noise: 0.0000005, add: 0.00000003}   # add: answer to the add query
     status: {value: 1024, value_on: 1025, when: output}   # value_on while `output` is on
     trace: {sweep: points}                 # a list, one value per point of the `points` control
     complex: {sweep: points, complex: true}   # real, imaginary pairs

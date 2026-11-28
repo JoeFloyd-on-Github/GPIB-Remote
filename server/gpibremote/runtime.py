@@ -19,6 +19,17 @@ from .devicetypes import ValueRejected, parse_seconds
 log = logging.getLogger(__name__)
 audit = logging.getLogger("gpibremote.audit")
 
+OVERLOAD = "OVLD"     # published in place of a reading at or beyond a readout's `overload` value
+
+
+def _same_number(a, b):
+    """True when a and b are the same number (an enum option '10' and a value 10.0)."""
+    try:
+        x, y = float(a), float(b)
+    except (TypeError, ValueError):
+        return False
+    return abs(x - y) <= 1e-9 * max(abs(x), abs(y))
+
 
 class DeviceError(Exception):
     """An operation reached the instrument but failed there (error queue, bad response)."""
@@ -67,6 +78,7 @@ class InstanceRuntime:
         self.poll_task = None
         self.lock = None
         self.cache = {}            # key -> {"value", "t", "source"}
+        self._order = {}           # key -> update count, so the newer of two entries is known
         self.online = None         # None = not yet contacted
         self.last_error = None
         self._last_error_event = 0.0
@@ -277,16 +289,19 @@ class InstanceRuntime:
     def _store(self, key, value, source):
         entry = {"value": value, "t": time.time(), "source": source}
         self.cache[key] = entry
+        self._seq = getattr(self, "_seq", 0) + 1      # which of two entries is newer, at any clock resolution
+        self._order[key] = self._seq
         return entry
 
     # -- operations -----------------------------------------------------------
     async def get(self, key, fresh=True):
         section, name, ch, d = self.t.item(key)
         template = d.get("get") if section == "controls" else d.get("query")
-        if section == "readouts" and d.get("decode"):
-            # Decoded from another readout (status bits): read that, which publishes this one.
+        if section == "readouts" and (d.get("decode") or d.get("accuracy")):
+            # Decoded from another readout (status bits, an uncertainty): read that, which
+            # publishes this one.
             if fresh:
-                src = d["decode"]["readout"]
+                src = (d.get("decode") or d.get("accuracy"))["readout"]
                 await self.get("%s.%s" % (ch, src) if ch else src)
             return self.cache.get(key) or {"value": None, "t": None, "source": "unknown"}
         if section == "readouts" and fresh and (d.get("unless") or d.get("only")):
@@ -316,14 +331,28 @@ class InstanceRuntime:
             steps.append(("b", cmd))
         else:
             steps.append(("q", cmd))
+        # A second query whose number is added to the reading (the 3457A's extra digit, HIRES).
+        add = d.get("add") if section == "readouts" else None
+        if add and self._blocked(ch, add):
+            add = None
+        if add:
+            steps.append(("q", self.t.render(add["query"], ch)))
         if section == "readouts" and d.get("clear_srq"):
             steps.append(("p", None))   # the query raises SRQ (e.g. 3455A "B"); a serial poll clears it
-        resp = (await self._transact(steps))[-1]
+        resps = await self._transact(steps)
+        resp = resps[-2] if add else resps[-1]
         try:
             value = self.t.parse_block(d, resp) if isinstance(resp, bytes) else self.t.parse(d, resp)
         except ValueError as exc:
             raise DeviceError("bad_response", str(exc))
         if section == "readouts":
+            if d.get("overload") and isinstance(value, float) and abs(value) >= 0.99 * float(d["overload"]):
+                return self._publish_reading(key, OVERLOAD)
+            if add:
+                try:
+                    value += self.t.parse({"parse": "number"}, resps[-1])
+                except ValueError as exc:
+                    log.debug("%s: %s: ignoring the added reading: %s", self.id, key, exc)
             return self._publish_reading(key, value)
         return self._publish_state(key, value, "read")
 
@@ -342,8 +371,15 @@ class InstanceRuntime:
                 self._publish_state(ckey, decoded, self.t.status_spec(cname)[1], by="server: from %s" % key)
         for dname in self.t.decoded_by.get(rname, ()):   # readings decoded from this one (status bits)
             dkey = "%s.%s" % (ch, dname) if ch else dname
-            self._publish_reading(dkey, self.t.decode_value(dname, value))
+            self._publish_reading(dkey, self.t.decode_value(dname, value, lambda c: self._setting(c, ch)))
         return entry
+
+    def _setting(self, cname, ch=None):
+        """A control's state entry (channel-scoped when it is per channel) with its update `order`,
+        or None."""
+        key = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
+        e = self.cache.get(key)
+        return None if e is None else dict(e, order=self._order.get(key, 0))
 
     def _infer_source(self, cname, ch):
         rname = self.t.status_spec(cname)[0]["readout"]
@@ -431,16 +467,20 @@ class InstanceRuntime:
     def _unavailable(self, key):
         """Why a readout can't be read in the present settings (its `unless`), or None."""
         ch, name = self.t.split_key(key)
-        d = self.t.readouts.get(name) or {}
+        why = self._blocked(ch, self.t.readouts.get(name) or {})
+        return "%s isn't available while %s" % (key, why) if why else None
+
+    def _blocked(self, ch, d):
+        """'control is value' when d's `unless` or `only` rules it out now, else None. A control
+        whose value isn't known doesn't rule anything out."""
         for cond in ("unless", "only"):
             for cname, values in (d.get(cond) or {}).items():
-                ckey = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
-                cur = (self.cache.get(ckey) or {}).get("value")
+                cur = (self._setting(cname, ch) or {}).get("value")
                 if cur is None:
                     continue
-                listed = str(cur).upper() in {str(v).upper() for v in values}
+                listed = any(str(cur).upper() == str(v).upper() or _same_number(cur, v) for v in values)
                 if listed == (cond == "unless"):
-                    return "%s isn't available while %s is %s" % (key, cname, cur)
+                    return "%s is %s" % (cname, cur)
         return None
 
     async def action(self, name, session, channel=None):

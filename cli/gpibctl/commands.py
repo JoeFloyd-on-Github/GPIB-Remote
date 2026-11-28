@@ -130,12 +130,18 @@ def cmd_type_show(ctx, a):
     for name, d in m["readouts"].items():
         if d.get("decode"):
             how = "from " + d["decode"]["readout"]
+        elif d.get("accuracy"):
+            how = "uncertainty of " + d["accuracy"]["readout"]
         elif d.get("unless"):
             how = "not while " + ", ".join("%s %s" % (c, "/".join(map(str, v))) for c, v in d["unless"].items())
         elif d.get("only"):
             how = "only while " + ", ".join("%s %s" % (c, "/".join(map(str, v))) for c, v in d["only"].items())
         else:
             how = ""
+        if d.get("add"):
+            how = (how + "; " if how else "") + "plus " + d["add"]["query"]
+        if d.get("overload"):
+            how = (how + "; " if how else "") + "OVLD at %g" % d["overload"]
         kind = d.get("unit", "") or ({"list": "list", "bool": "bool", "text": "text"}.get(d.get("parse"), ""))
         rows.append(["readout", ("<ch>." if d.get("per_channel") else "") + name, kind,
                      ("poll %s" % d["poll"]) if d.get("poll") else "", how, d.get("label", "")])

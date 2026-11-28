@@ -1,0 +1,322 @@
+schema: 1
+type: hp.3457a
+version: '1.2.0'
+title: HP 3457A 7.5-Digit Multimeter
+manufacturer: Hewlett-Packard
+model: 3457A
+verified: false         # written from the manual; not yet tried on the bench unit
+description: >
+  Pre-SCPI HP-IB multimeter (HP 3457 command language). The server shows the last value it set
+  for each setting (marked "assumed"). A reading is taken with TRIG SGL, which leaves the meter
+  in trigger-hold. At NPLC 10 and 100 the reading includes the extra digit from the HIRES
+  register. An overload reads OVLD, and Uncertainty gives the 90-day accuracy of each reading
+  from the Service Manual's specifications.
+references:
+  - HP 3457A Operating Manual, part 03457-90003, May 1986 (docs/devices/hp-3457a/manuals)
+  - HP 3457A Service Manual, part 03457-90012, edition 3, February 1988, table 1-1 (accuracy)
+notes: >
+  1.2.0: NPLC is the list of integration times the meter has (it rounds any other value up);
+  HIRES digit; OVLD; expected AC frequency (ACBAND); uncertainty readout. The manual also
+  documents query forms (FUNC?, NPLC?, RANGE?, AZERO?, OCOMP?, TERM?) that could replace the
+  assumed values once tried on the bench.
+
+connection:
+  eos: "\n"
+  write_termination: "\n"
+  timeout: 10s          # slow integration times (NPLC 100) take seconds per reading
+
+identify:
+  probe: 'ID?'          # answers 'HP3457A'
+  match: '3457A'
+
+errors:
+  query: 'ERR?'         # error register; 0 = no error
+  none: '^\s*\+?0\s*$'
+  check_after_set: false
+
+init: ['END ALWAYS']    # EOI on every reading, so reads end cleanly
+
+controls:
+  function:
+    kind: enum
+    label: Function
+    description: Selecting a function also turns autorange on.
+    set: '{value}'
+    options:
+      DCV:   {label: DC volts}
+      ACV:   {label: AC volts}
+      ACDCV: {label: AC+DC volts}
+      OHM:   {label: 2-wire ohms}
+      OHMF:  {label: 4-wire ohms}
+      DCI:   {label: DC current}
+      ACI:   {label: AC current}
+      ACDCI: {label: AC+DC current}
+      FREQ:  {label: Frequency}
+      PER:   {label: Period}
+  autorange:
+    kind: bool
+    label: Autorange
+    set: 'ARANGE {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+  range:
+    kind: number
+    label: Range (max expected value)
+    description: Sets a fixed range for the present function and turns autorange off.
+    min: 0
+    max: 3000000000
+    set: 'RANGE {value}'
+  nplc:
+    kind: enum
+    label: Integration (power-line cycles)
+    description: >
+      Longer integration gives more digits and more rejection of line-frequency noise. At 10 and
+      100 the reading includes the extra digit from the HIRES register.
+    set: 'NPLC {value}'
+    options:
+      '0.0005': {label: '0.0005 (3.5 digits)'}
+      '0.005':  {label: '0.005 (4.5 digits)'}
+      '0.1':    {label: '0.1 (5.5 digits)'}
+      '1':      {label: '1 (6.5 digits, 60 dB NMR)'}
+      '10':     {label: '10 (7.5 digits, 80 dB NMR)'}
+      '100':    {label: '100 (7.5 digits, 90 dB NMR)'}
+  ac_band:
+    kind: number
+    label: Expected AC frequency
+    unit: Hz
+    description: >
+      ACBAND: the frequency of the signal for AC, AC+DC, frequency and period measurements.
+      Below 400 Hz the meter uses its slow filter, from 400 Hz the fast one. Also picks the row
+      of the AC accuracy specs that Uncertainty uses. 20 after a reset.
+    min: 1
+    max: 10000000
+    set: 'ACBAND {value}'
+  autozero:
+    kind: enum
+    label: Autozero
+    set: 'AZERO {value}'
+    options:
+      'ON':   {label: 'On'}
+      'OFF':  {label: 'Off'}
+      'ONCE': {label: Once}
+  terminals:
+    kind: enum
+    label: Input terminals
+    set: 'TERM {value}'
+    options:
+      FRONT: {label: Front}
+      REAR:  {label: Rear}
+  offset_comp:
+    kind: bool
+    label: Offset compensation
+    description: >
+      OHM/OHMF only, ranges up to 3 kohm: each reading is taken with the current source on and
+      off and the difference used, cancelling thermal EMFs in the leads and the sample.
+    set: 'OCOMP {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+  display:
+    kind: bool
+    label: Front display
+    set: 'DISP {value}'
+    values: {'on': 'ON', 'off': 'OFF'}
+
+readouts:
+  reading:
+    label: Reading
+    query: 'TRIG SGL'   # take one reading and return it
+    parse: number
+    poll: 2s
+    overload: 1.0e+38   # the meter sends 1E38 for an overload; shown as OVLD
+    add:                # the extra (7.5th) digit, valid after a reading at NPLC 10 or 100
+      query: 'RMATH HIRES'
+      only: {nplc: ['10', '100']}
+      unless: {function: [FREQ, PER]}
+  uncertainty:
+    label: Uncertainty (+/-, 90 day)
+    description: >
+      The meter's 90-day accuracy for the last reading (Service Manual table 1-1, Tcal +/- 5 C,
+      after 1 h warm-up): % of reading plus counts. AC needs Expected AC frequency, and assumes
+      AC auto-cal (ACAL AC) within the last week. Blank when a setting it needs isn't known
+      (set the function and NPLC first) or the manual has no figure for it.
+    parse: number
+    accuracy:
+      readout: reading
+      table: function       # control whose value picks the table
+      column: nplc          # the counts column: the largest NPLC at or below the setting
+      range: range          # a fixed range, while set after the function and autorange
+      autorange: autorange
+      band: ac_band         # picks the frequency row of the AC tables
+      overrange: 1.01       # DC and ohms ranges read to 101% (3.030000 V on the 3 V range)
+      tables:
+        # Service Manual table 1-1, 90 day, Tcal +/- 5 C, after 1 h warm-up.
+        # columns: {NPLC: counts in one range}. A count is the last digit at that resolution:
+        # range / 3,000,000 at 6.5 digits (1 uV on the 3 V range), / 300,000 at 5.5 and so on.
+        DCV:
+          columns: {100: 3000000, 10: 3000000, 1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: 0.03, pct: 0.0040, counts: [365, 385, 500, 70, 19, 6]}
+            - {range: 0.3,  pct: 0.0025, counts: [39, 40, 50, 9, 4, 4]}
+            - {range: 3,    pct: 0.0017, counts: [6, 7, 7, 4, 4, 4]}
+            - {range: 30,   pct: 0.0035, counts: [19, 20, 30, 7, 4, 4]}
+            - {range: 300,  pct: 0.0050, counts: [6, 7, 7, 4, 4, 4]}
+        DCI:
+          note: The 3 A range reads up to 1 A.
+          columns: {100: 3000000, 10: 3000000, 1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: 0.0003, pct: 0.020, counts: [104, 104, 115, 14, 5, 4]}
+            - {range: 0.003,  pct: 0.020, counts: [104, 104, 115, 14, 5, 4]}
+            - {range: 0.03,   pct: 0.020, counts: [104, 104, 115, 14, 5, 4]}
+            - {range: 0.3,    pct: 0.070, counts: [204, 204, 215, 24, 6, 4]}
+            - {range: 3,      pct: 0.070, counts: [604, 604, 615, 64, 10, 5]}
+        OHM:
+          note: >
+            2-wire: the counts include a 200 mohm lead allowance. 300 Mohm and 3 Gohm (extended
+            ohms) apply after ohms auto-cal and have no figure at NPLC 0.0005.
+          columns: {100: 3000000, 10: 3000000, 1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: 30,         pct: 0.0065, counts: [20315, 20335, 20450, 20065, 20018, 20006]}
+            - {range: 300,        pct: 0.0045, counts: [2034, 2035, 2045, 2008, 2004, 2004]}
+            - {range: 3000,       pct: 0.0035, counts: [206, 207, 207, 204, 204, 204]}
+            - {range: 30000,      pct: 0.0035, counts: [26, 27, 27, 24, 24, 24]}
+            - {range: 300000,     pct: 0.0040, counts: [9, 10, 11, 6, 6, 6]}
+            - {range: 3000000,    pct: 0.0055, counts: [12, 14, 16, 7, 5, 5]}
+            - {range: 30000000,   pct: 0.025,  counts: [80, 83, 93, 14, 6, 5]}
+            - {range: 300000000,  pct: 1.6,    counts: [1000, 1000, 1000, 100, 10, null]}
+            - {range: 3000000000, pct: 16.0,   counts: [1000, 1000, 1000, 100, 10, null]}
+        OHMF:
+          columns: {100: 3000000, 10: 3000000, 1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: 30,       pct: 0.0065, counts: [315, 335, 450, 65, 18, 6]}
+            - {range: 300,      pct: 0.0045, counts: [34, 35, 45, 8, 4, 4]}
+            - {range: 3000,     pct: 0.0035, counts: [6, 7, 7, 4, 4, 4]}
+            - {range: 30000,    pct: 0.0035, counts: [6, 7, 7, 4, 4, 4]}
+            - {range: 300000,   pct: 0.004,  counts: [7, 8, 9, 4, 4, 4]}
+            - {range: 3000000,  pct: 0.0055, counts: [12, 14, 16, 7, 5, 5]}
+            - {range: 30000000, pct: 0.025,  counts: [80, 83, 93, 14, 6, 5]}
+        # AC: within a week of AC auto-cal, sine waves above 10% of range. Bands in Hz; from
+        # 400 Hz the meter uses its fast filter, which has its own row. AC ranges read to 108%
+        # (32.5 mV on the 30 mV range).
+        ACV:
+          overrange: 1.0834
+          columns: {1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: [0.03, 0.3, 3, 30], band: [20, 45],          pct: 0.56,  counts: [1120, 116, 16, 6]}
+            - {range: [0.03, 0.3, 3, 30], band: [45, 100],         pct: 0.21,  counts: [1120, 116, 16, 6]}
+            - {range: [0.03, 0.3, 3, 30], band: [100, 20000],      pct: 0.13,  counts: [1120, 116, 16, 6]}
+            - {range: [0.03, 0.3, 3, 30], band: [400, 20000],      pct: 0.14,  counts: [1120, 550, 59, 10]}
+            - {range: [0.03, 0.3, 3, 30], band: [20000, 100000],   pct: 0.66,  counts: [2100, 224, 27, 7]}
+            - {range: [0.03, 0.3, 3, 30], band: [100000, 300000],  pct: 3.16,  counts: [9700, 974, 102, 14]}
+            - {range: [0.03, 0.3, 3, 30], band: [300000, 1000000], pct: 10.16, counts: [66400, 6640, 668, 71]}
+            - {range: 300, band: [20, 45],        pct: 0.62, counts: [1120, 116, 16, 6]}
+            - {range: 300, band: [45, 100],       pct: 0.27, counts: [1120, 116, 16, 6]}
+            - {range: 300, band: [100, 20000],    pct: 0.19, counts: [1120, 116, 16, 6]}
+            - {range: 300, band: [400, 20000],    pct: 0.20, counts: [1120, 550, 59, 10]}
+            - {range: 300, band: [20000, 100000], pct: 1.06, counts: [3700, 374, 42, 8]}
+        ACDCV:
+          overrange: 1.0834
+          columns: {1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: [0.03, 0.3, 3, 30], band: [20, 45],          pct: 1.36,  counts: [3600, 364, 41, 8]}
+            - {range: [0.03, 0.3, 3, 30], band: [45, 100],         pct: 0.17,  counts: [3600, 364, 41, 8]}
+            - {range: [0.03, 0.3, 3, 30], band: [100, 20000],      pct: 0.17,  counts: [3600, 364, 41, 8]}
+            - {range: [0.03, 0.3, 3, 30], band: [400, 20000],      pct: 0.44,  counts: [3600, 2810, 285, 33]}
+            - {range: [0.03, 0.3, 3, 30], band: [20000, 100000],   pct: 0.66,  counts: [4620, 466, 51, 9]}
+            - {range: [0.03, 0.3, 3, 30], band: [100000, 300000],  pct: 3.16,  counts: [11400, 1144, 119, 16]}
+            - {range: [0.03, 0.3, 3, 30], band: [300000, 1000000], pct: 10.16, counts: [69600, 6960, 701, 74]}
+            - {range: 300, band: [20, 45],        pct: 1.36, counts: [3600, 364, 41, 8]}
+            - {range: 300, band: [45, 100],       pct: 0.23, counts: [3600, 364, 41, 8]}
+            - {range: 300, band: [100, 20000],    pct: 0.23, counts: [3600, 364, 41, 8]}
+            - {range: 300, band: [400, 20000],    pct: 0.50, counts: [3600, 2810, 285, 33]}
+            - {range: 300, band: [20000, 100000], pct: 1.16, counts: [6420, 650, 69, 11]}
+        ACI:
+          note: The 3 A range reads up to 1 A.
+          overrange: 1.0834
+          columns: {1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: [0.03, 0.3], band: [20, 45],        pct: 0.85, counts: [2800, 290, 32, 7]}
+            - {range: [0.03, 0.3], band: [46, 100],       pct: 0.30, counts: [2800, 290, 32, 7]}
+            - {range: [0.03, 0.3], band: [101, 20000],    pct: 0.25, counts: [2800, 290, 32, 7]}
+            - {range: [0.03, 0.3], band: [400, 20000],    pct: 0.25, counts: [2800, 750, 80, 12]}
+            - {range: [0.03, 0.3], band: [21000, 100000], pct: 1.0,  counts: [4000, 400, 42, 8]}
+            - {range: 3, band: [20, 45],     pct: 0.95, counts: [2800, 290, 32, 7]}
+            - {range: 3, band: [46, 100],    pct: 0.40, counts: [2800, 290, 32, 7]}
+            - {range: 3, band: [101, 20000], pct: 0.35, counts: [2800, 290, 32, 7]}
+            - {range: 3, band: [400, 20000], pct: 0.35, counts: [2800, 750, 80, 12]}
+        ACDCI:
+          note: The 3 A range reads up to 1 A.
+          overrange: 1.0834
+          columns: {1: 3000000, 0.1: 300000, 0.005: 30000, 0.0005: 3000}
+          rows:
+            - {range: [0.03, 0.3], band: [20, 45],        pct: 1.55, counts: [16000, 1600, 165, 20]}
+            - {range: [0.03, 0.3], band: [46, 100],       pct: 0.40, counts: [16000, 1600, 165, 20]}
+            - {range: [0.03, 0.3], band: [101, 20000],    pct: 0.30, counts: [16000, 1600, 165, 20]}
+            - {range: [0.03, 0.3], band: [400, 20000],    pct: 0.65, counts: [16000, 3750, 375, 42]}
+            - {range: [0.03, 0.3], band: [21000, 100000], pct: 0.95, counts: [17500, 1750, 180, 22]}
+            - {range: 3, band: [20, 45],     pct: 1.65, counts: [16000, 1600, 165, 20]}
+            - {range: 3, band: [46, 100],    pct: 0.50, counts: [16000, 1600, 165, 20]}
+            - {range: 3, band: [101, 20000], pct: 0.40, counts: [16000, 1600, 165, 20]}
+            - {range: 3, band: [400, 20000], pct: 0.75, counts: [16000, 3750, 375, 42]}
+        FREQ:
+          note: The band is the reading itself (Operating Manual gives these as 1-year figures).
+          band_by: reading
+          rows:
+            - {band: [10, 400],      pct: 0.05}
+            - {band: [400, 1500000], pct: 0.01}
+        PER:
+          note: The band is the reading itself (100 ms to 2.5 ms, and 2.5 ms to 667 ns).
+          band_by: reading
+          rows:
+            - {band: [0.000000667, 0.0025], pct: 0.01}
+            - {band: [0.0025, 0.1],         pct: 0.05}
+
+actions:
+  reset:
+    label: Reset
+    send: ['RESET', 'END ALWAYS']
+    confirm: true
+    assumes: {function: DCV, autorange: true, nplc: '10', ac_band: 20, autozero: 'ON',
+              terminals: FRONT, offset_comp: false, display: true}
+  autocal_ohms:
+    label: Auto-calibrate (ohms)
+    description: ACAL OHMS. The meter is busy for about a minute; wait before the next command.
+    send: ['ACAL OHMS']
+    confirm: true
+  autocal_ac:
+    label: Auto-calibrate (AC)
+    description: >
+      ACAL AC. The AC accuracy specs assume this within the last week. The meter is busy for
+      about a minute; wait before the next command.
+    send: ['ACAL AC']
+    confirm: true
+  autocal_all:
+    label: Auto-calibrate (all)
+    description: ACAL ALL. The meter is busy for several minutes; wait before the next command.
+    send: ['ACAL ALL']
+    confirm: true
+  trigger_auto:
+    label: Free-run triggering (front panel)
+    send: ['TRIG AUTO']
+
+menu:
+  - Measure: [function, autorange, range, nplc, ac_band, reading, uncertainty]
+  - Input: [terminals, autozero, offset_comp]
+  - System: [display, trigger_auto, autocal_ohms, autocal_ac, autocal_all, reset]
+
+roles:
+  meter:
+    function: function
+    functions: {dcv: DCV, acv: ACV, acdcv: ACDCV, dci: DCI, aci: ACI, acdci: ACDCI, ohm2: OHM, ohm4: OHMF,
+                freq: FREQ, period: PER}
+    reading: reading
+    range: range
+    autorange: autorange
+    nplc: nplc
+    autozero: autozero
+    offset_comp: offset_comp
+    autocal: autocal_ohms
+    reset: reset
+
+sim:
+  identity: 'HP3457A'
+  state: {nplc: '10', ac_band: 20}
+  readouts:
+    reading: {value: 1.2345678, noise: 0.0000005, add: 0.00000003}

@@ -181,6 +181,10 @@ class TypeSimInstrument:
             if self.errors:
                 return self.errors.pop(0)
             return '+0,"No error"' if "," in (t.error_none or ",") else "0"
+        for name, d in t.readouts.items():     # a readout's added query (3457A RMATH HIRES)
+            add = d.get("add")
+            if add and cmd.upper() == t.render(add["query"], self.channel).upper():
+                return "%+.8E" % float((self.sim_readouts.get(name) or {}).get("add", 0.0))
         for name, d in t.readouts.items():
             for ch in (list(t.channels) if d.get("per_channel") else [None]):
                 q = d.get("query")

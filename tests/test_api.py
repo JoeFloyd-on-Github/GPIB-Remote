@@ -36,7 +36,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(found[22].types, ["hp.3457a"])
         self.assertEqual(found[22].probe, "ID?")          # *IDN? got no answer, so ID? was tried
         dmm = self.bench.add("dmm-ohms", "hp.3457a", 22, name="Ohms meter", notes="Kelvin probe")
-        self.assertEqual(dmm.type, "hp.3457a@1.1.0")
+        self.assertEqual(dmm.type, "hp.3457a@1.2.0")
         self.assertIs(self.bench["dmm-ohms"], dmm)
         self.assertEqual(sorted(d.id for d in self.bench.devices()), ["bench-psu", "dmm-ohms"])
         self.assertIn("offset_comp", dmm.describe())
