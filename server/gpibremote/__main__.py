@@ -76,7 +76,7 @@ async def run(cfg):
     if cfg["web"].get("enabled", True):
         w = cfg["web"]
         web = await serve_web(dispatcher, w["host"], w["port"], w["root"], hub, manager,
-                              w.get("allowed_origins") or ())
+                              w.get("allowed_origins") or (), config.APP_DIR, cfg["listen"]["port"])
         logging.info("web client on http://%s:%d/ (files %s)", w["host"], w["port"], w["root"])
     manager.start()
     logging.info("gpibremote %s listening on %s:%d; boards %s; data %s", __version__,

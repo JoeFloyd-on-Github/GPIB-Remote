@@ -8,7 +8,8 @@ The same messages also travel over a plain WebSocket at `ws://192.168.1.157:8080
 (RFC 6455, version 13), one JSON object per text message; binary messages are refused. A
 browser's request is refused unless its `Origin` is the server itself or listed in
 `web.allowed_origins`; clients that send no `Origin` are accepted. Port 8080 also serves the
-web client's files (GET/HEAD only). Requests on one WebSocket are answered in order, as on TCP.
+web client's files (GET/HEAD only), and `/download/gpibctl.zip`: the CLI and test-script API
+zipped from the server's copy. Requests on one WebSocket are answered in order, as on TCP.
 
 ## Requests, responses, events
 

@@ -25,7 +25,7 @@ Traces from scopes and analyzers (phase 4) come next.
 
 ```
 server/gpibremote/   server: backends/ (linux-gpib via ctypes, simulator), bus worker, protocol, TCP
-cli/gpibctl/         command-line client, and the test-script API (api.py)
+cli/gpibctl/         command-line client, and the test-script API (api.py); zipped at /download/gpibctl.zip
 web/                 browser client (plain JavaScript, no build step), served on port 8080
 deploy/              Python build script, offline packages, install script, systemd unit
 devices/types/       built-in device types (YAML, one folder per type, one file per version)
@@ -35,7 +35,10 @@ tests/               unittest suite (runs against the simulator)
 
 ## Quick use
 
-From any PC with Python 3.9+ (no packages needed):
+From any PC with Python 3.9+ (no packages needed). No copy of the repository? The web client's
+**Get CLI** link (or http://192.168.1.157:8080/download/gpibctl.zip) downloads the CLI, the
+test-script API, its docs and the example scripts as a zip, built from the server's own copy:
+
 
 ```
 python cli/gpibctl --host 192.168.1.157 config      # remember the server (~/.gpibctl.ini)

@@ -1,6 +1,9 @@
 """Plain HTTP and WebSocket transport (port 8080, no TLS; LAN or VPN only).
 
 - GET/HEAD serve the web client's files from `web.root` (index.html for directories).
+- `/download/gpibctl.zip` is the command-line client and test-script API, zipped from the files
+  on disk at the time of the request (so it always matches this server), with a README and a
+  gpibctl.ini already pointing at this server.
 - `/ws` upgrades to a WebSocket (RFC 6455) carrying exactly the JSON messages of port 9000, one
   per text message, through the same dispatcher, so the browser has the CLI's full control.
 
@@ -19,10 +22,13 @@ import hashlib
 import json
 import logging
 import os
+import io
 import posixpath
+import re
 import struct
 import time
 import urllib.parse
+import zipfile
 
 from .tcp import MAX_BACKLOG, MAX_LINE, Session
 
@@ -38,6 +44,69 @@ CONTENT_TYPES = {
     ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".yaml": "text/plain; charset=utf-8",
     ".md": "text/plain; charset=utf-8",
 }
+CLI_ZIP = "/download/gpibctl.zip"
+# What the CLI download holds: (directory relative to the repository, file pattern).
+CLI_FILES = (("cli/gpibctl", r".*\.py$"), ("scripts", r".*\.py$"), ("docs", r"^(api|protocol)\.md$"))
+CLI_README = """gpibctl %(version)s: command-line client and test-script API for GPIB-Remote
+Downloaded from http://%(web)s/ ; the server's protocol port is %(host)s:%(port)d.
+
+Needs Python 3.9 or later and nothing else (standard library only).
+
+Run the CLI (from this folder; on Windows use `py` or `python` instead of `python3`):
+    python3 cli/gpibctl --host %(host)s config    # remember the server in ~/.gpibctl.ini
+    python3 cli/gpibctl ls                         # instruments, types, lock state
+    python3 cli/gpibctl menu                       # menu-driven control
+    python3 cli/gpibctl -h                         # everything else
+
+gpibctl.ini here is the same setting: copy it to your home folder as .gpibctl.ini
+(%%USERPROFILE%%\\.gpibctl.ini on Windows) instead of running `config`, or set GPIBREMOTE_HOST.
+
+Test scripts: docs/api.md describes the API (cli/gpibctl/api.py). Scripts in scripts/ find it
+on their own, e.g.
+    python3 scripts/nickel_plating.py --setup --host %(host)s
+
+Download again from the web client's Server page to get the server's current version.
+"""
+
+
+def _version(src_root):
+    try:
+        with open(os.path.join(src_root, "cli", "gpibctl", "__init__.py"), encoding="utf-8") as fh:
+            m = re.search(r"^__version__\s*=\s*[\"']([^\"']+)", fh.read(), re.M)
+        return m.group(1) if m else "0"
+    except OSError:
+        return "0"
+
+
+def build_cli_zip(src_root, host="localhost", port=9000, web=None):
+    """The CLI download: (file name, zip bytes). Files are read from src_root (the repository)."""
+    version = _version(src_root)
+    top = "gpibctl-%s/" % version
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for rel_dir, pattern in CLI_FILES:
+            d = os.path.join(src_root, *rel_dir.split("/"))
+            try:
+                names = sorted(os.listdir(d))
+            except OSError:
+                continue
+            for n in names:
+                full = os.path.join(d, n)
+                if re.match(pattern, n) and os.path.isfile(full):
+                    z.write(full, top + rel_dir + "/" + n)
+        info = {"version": version, "host": host, "port": port, "web": web or host}
+        z.writestr(top + "README.txt", (CLI_README % info).replace("\n", "\r\n"))
+        z.writestr(top + "gpibctl.ini", "[server]\r\nhost = %s\r\nport = %d\r\n" % (host, port))
+    return "gpibctl-%s.zip" % version, buf.getvalue()
+
+
+def _request_host(headers):
+    """The host name the browser used to reach us (Host header without the port), if it's sane."""
+    h = headers.get("host", "")
+    m = re.match(r"^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:\d+)?$", h)
+    return (m.group(1), h) if m else ("localhost", "localhost")
+
+
 REASONS = {200: "OK", 101: "Switching Protocols", 301: "Moved Permanently", 304: "Not Modified",
            400: "Bad Request", 403: "Forbidden", 404: "Not Found", 405: "Method Not Allowed",
            426: "Upgrade Required", 431: "Request Header Fields Too Large", 500: "Internal Server Error"}
@@ -104,9 +173,12 @@ class WsSession(Session):
 
 
 class WebServer:
-    def __init__(self, dispatcher, root, hub=None, manager=None, allowed_origins=()):
+    def __init__(self, dispatcher, root, hub=None, manager=None, allowed_origins=(), src_root=None,
+                 tcp_port=9000):
         self.dispatcher = dispatcher
         self.root = os.path.realpath(root)
+        self.src_root = os.path.realpath(src_root or os.path.dirname(self.root))
+        self.tcp_port = tcp_port
         self.hub = hub
         self.manager = manager
         self.allowed = {o.rstrip("/").lower() for o in allowed_origins or ()}
@@ -146,7 +218,10 @@ class WebServer:
                 if method not in ("GET", "HEAD"):
                     await self.respond(writer, 405, b"only GET and HEAD\n", close=True, extra={"Allow": "GET, HEAD"})
                     break
-                await self.static(writer, path, headers, method == "HEAD", not keep)
+                if path == CLI_ZIP:
+                    await self.cli_zip(writer, headers, method == "HEAD", not keep)
+                else:
+                    await self.static(writer, path, headers, method == "HEAD", not keep)
                 if not keep:
                     break
         except ConnectionError:
@@ -165,6 +240,12 @@ class WebServer:
         out += ["%s: %s" % kv for kv in hdrs.items()]
         writer.write(("\r\n".join(out) + "\r\n\r\n").encode("latin-1") + (b"" if head_only else body))
         await writer.drain()
+
+    async def cli_zip(self, writer, headers, head_only, close):
+        host, web = _request_host(headers)
+        name, body = build_cli_zip(self.src_root, host, self.tcp_port, web)
+        await self.respond(writer, 200, body, "application/zip", close=close, head_only=head_only,
+                           extra={"Content-Disposition": 'attachment; filename="%s"' % name})
 
     async def static(self, writer, path, headers, head_only, close):
         rel = posixpath.normpath(urllib.parse.unquote(path)).lstrip("/")
@@ -282,6 +363,7 @@ class WebServer:
             pass
 
 
-async def serve_web(dispatcher, host, port, root, hub=None, manager=None, allowed_origins=()):
-    web = WebServer(dispatcher, root, hub, manager, allowed_origins)
+async def serve_web(dispatcher, host, port, root, hub=None, manager=None, allowed_origins=(),
+                    src_root=None, tcp_port=9000):
+    web = WebServer(dispatcher, root, hub, manager, allowed_origins, src_root, tcp_port)
     return await asyncio.start_server(web.on_client, host, port, limit=MAX_HEAD, reuse_address=True)

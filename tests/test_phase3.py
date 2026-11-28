@@ -6,13 +6,18 @@
 import asyncio
 import base64
 import http.client
+import io
 import json
 import os
+import re
 import shutil
 import socket
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
+import zipfile
 
 from test_phase1 import PSU, ROOT, Stack  # noqa: F401  (sets sys.path)
 
@@ -175,6 +180,37 @@ class Phase3(unittest.TestCase):
             self.assertEqual(self.get(bad)[0].status, 404, bad)
         self.assertEqual(self.get("/js")[0].status, 301)
         self.assertEqual(self.get("/", method="DELETE")[0].status, 405)
+
+    def test_cli_download(self):
+        r, body = self.get("/download/gpibctl.zip", headers={"Host": "bench.lan:8080"})
+        self.assertEqual((r.status, r.getheader("Content-Type")), (200, "application/zip"))
+        name = re.search(r'filename="([^"]+)"', r.getheader("Content-Disposition")).group(1)
+        self.assertRegex(name, r"^gpibctl-[0-9.]+\.zip$")
+        top = name[:-4] + "/"
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            names = set(z.namelist())
+            for f in ("cli/gpibctl/__init__.py", "cli/gpibctl/__main__.py", "cli/gpibctl/api.py",
+                      "scripts/nickel_plating.py", "docs/api.md", "README.txt", "gpibctl.ini"):
+                self.assertIn(top + f, names)
+            self.assertFalse([n for n in names if "__pycache__" in n or n.endswith(".pyc")])
+            ini = z.read(top + "gpibctl.ini").decode()
+            self.assertIn("host = bench.lan", ini)
+            self.assertIn("port = 9000", ini)
+            self.assertIn("--host bench.lan config", z.read(top + "README.txt").decode())
+            with open(os.path.join(ROOT, "cli", "gpibctl", "api.py"), "rb") as fh:
+                self.assertEqual(z.read(top + "cli/gpibctl/api.py"), fh.read())
+            out = os.path.join(self.tmp, "dl")
+            z.extractall(out)
+        # The unzipped CLI runs on its own.
+        p = subprocess.run([sys.executable, os.path.join(out, top, "cli", "gpibctl"), "--help"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=self.tmp, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stdout)
+        # HEAD, and a Host header that isn't a plain host name.
+        r, body = self.get("/download/gpibctl.zip", method="HEAD")
+        self.assertEqual((r.status, body), (200, b""))
+        r, body = self.get("/download/gpibctl.zip", headers={"Host": "x\"y"})
+        with zipfile.ZipFile(io.BytesIO(body)) as z:
+            self.assertIn("host = localhost", z.read(top + "gpibctl.ini").decode())
 
     def test_keepalive(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
