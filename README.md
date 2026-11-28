@@ -20,6 +20,7 @@ Windows, Linux or the Pi, including a menu mode and an interactive shell. The we
 Traces from scopes and analyzers (phase 4) come next.
 
 - [docs/device-type-format.md](docs/device-type-format.md): how to write a device type
+- [docs/devices/](docs/devices/README.md): manuals and GPIB notes for each instrument on the bench
 
 ## Layout
 
