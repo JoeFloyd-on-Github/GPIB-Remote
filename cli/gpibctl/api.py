@@ -773,16 +773,50 @@ class Meter:
             self.function = function
         if range is not None:
             if range == "auto":
-                self._need("autorange")
-                self.device.set(self.spec["autorange"], "on")
+                if not self._has("autorange") and self._range_option("AUTO"):
+                    self.device.set(self.spec["range"], self._range_option("AUTO"))
+                else:
+                    self._need("autorange")
+                    self.device.set(self.spec["autorange"], "on")
             else:
                 self._need("range")
-                self.device.set(self.spec["range"], range)
+                self.device.set(self.spec["range"], self._pick_range(range))
         for field, value in (("nplc", nplc), ("autozero", autozero), ("offset_comp", offset_comp)):
             if value is not None:
                 self._need(field)
                 self.device.set(self.spec[field], value)
         return self
+
+    def _range_option(self, name):
+        opts = ((self.device.model.get("controls") or {}).get(self.spec.get("range")) or {}).get("options") or {}
+        return next((o for o in opts if o.upper() == name.upper()), None)
+
+    def _current_function(self):
+        """The standard name of the function the meter is set to (as last set or read)."""
+        if self.function:
+            return self.function
+        if self.spec.get("function"):
+            value = self.device.get(self.spec["function"], fresh=False)
+            for std, opt in self.functions.items():
+                if str(opt).upper() == str(value).upper():
+                    return std
+        return None
+
+    def _pick_range(self, largest):
+        """For a type whose ranges are named (roles.meter.ranges): the smallest range whose full
+        scale covers `largest` in the present function. Otherwise the number as given."""
+        tables = self.spec.get("ranges")
+        if not tables or isinstance(largest, str):
+            return largest
+        fn = self._current_function()
+        table = tables.get(fn)
+        if not table:
+            raise ApiError("%s: no range table for function %r; give a range option (%s)" % (
+                self.id, fn, ", ".join(sorted({o for t in tables.values() for o in t}))))
+        fits = sorted((fs, opt) for opt, fs in table.items() if fs >= abs(largest))
+        if not fits:
+            raise ApiError("%s: %g is beyond the largest %s range (%g)" % (self.id, largest, fn, max(table.values())))
+        return fits[0][1]
 
     def _need(self, field):
         if not self._has(field):

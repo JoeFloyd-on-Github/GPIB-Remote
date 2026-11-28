@@ -1,0 +1,165 @@
+schema: 1
+type: hp.3455a
+version: '1.0.0'
+title: HP 3455A Digital Voltmeter
+manufacturer: Hewlett-Packard
+model: 3455A
+verified: false         # status bytes decoded on the bench unit (address 1); DC volts settings checked there
+description: >
+  5.5 / 6.5-digit voltmeter: DC and AC volts, 2- and 4-wire ohms. Programmed with letter-digit
+  codes (F1 R7 T1 ...). Its whole setup can be read back: B (binary program) makes it send four
+  status bytes, decoded here into function, range, trigger, math, auto-cal and high resolution.
+  Settings made through the server are remembered and reapplied when the meter is next switched
+  on. Careful: the ohms functions put a test current through whatever is on the input terminals.
+references:
+  - HP 3455A Operating and Service Manual, section III (Table 3-4 program codes, Table 3-5 binary program codes)
+notes: >
+  Status bytes (B, then talk): 1 math (59 off, 62 scale, 61 % error); 2 bits active low:
+  0 internal, 1 external, 2 hold trigger, 3 high resolution, 4 autorange, and bit 6 set while
+  auto-cal is on; 3 range and 4 function, one bit low each (62, 61, 59, 55, 47, 95). Decoded on the
+  bench unit by changing one setting at a time. Sending B alone raises SRQ (binary program error,
+  status 68); the server clears it with a serial poll.
+
+connection:
+  eos: "\n"             # readings end with CR LF
+  write_termination: "\n"
+  timeout: 5s           # high resolution takes about a second per reading
+
+identify:
+  probe: null           # no identity query; reading its status bytes (B) would raise SRQ
+
+restore: true           # remember settings and reapply them when the meter is switched on again
+
+controls:
+  function:
+    kind: enum
+    label: Function
+    set: 'F{value}'
+    options:
+      DCV:  {label: DC volts, token: '1'}
+      ACV:  {label: AC volts, token: '2'}
+      ACVF: {label: AC volts (fast), token: '3'}
+      OHM:  {label: 2-wire kilohms, token: '4'}
+      OHMF: {label: 4-wire kilohms, token: '5'}
+    readback:
+      readout: setup
+      byte: 4
+      cases:
+        - {equals: 62, value: DCV}
+        - {equals: 61, value: ACV}
+        - {equals: 59, value: ACVF}
+        - {equals: 55, value: OHM}
+        - {equals: 47, value: OHMF}
+  range:
+    kind: enum
+    label: Range
+    description: >
+      Full scale in volts, or kilohms for the ohms functions. A fixed range turns autorange off.
+    set: 'R{value}'
+    options:
+      AUTO:    {label: Autorange, token: '7'}
+      '0.1':   {label: 0.1 V / 0.1 kohm, token: '1'}
+      '1':     {label: 1 V / 1 kohm, token: '2'}
+      '10':    {label: 10 V / 10 kohm, token: '3'}
+      '100':   {label: 100 V / 100 kohm, token: '4'}
+      '1000':  {label: 1000 V / 1000 kohm, token: '5'}
+      '10000': {label: 10000 kohm (ohms only), token: '6'}
+    readback:
+      readout: setup
+      cases:
+        - {byte: 2, clear: 16, value: AUTO}   # autorange bit low = on
+        - {byte: 3, equals: 62, value: '0.1'}
+        - {byte: 3, equals: 61, value: '1'}
+        - {byte: 3, equals: 59, value: '10'}
+        - {byte: 3, equals: 55, value: '100'}
+        - {byte: 3, equals: 47, value: '1000'}
+        - {byte: 3, equals: 95, value: '10000'}
+  trigger:
+    kind: enum
+    label: Trigger
+    description: Internal runs continuously; hold takes a reading only when triggered.
+    set: 'T{value}'
+    options:
+      INT:  {label: Internal, token: '1'}
+      EXT:  {label: External, token: '2'}
+      HOLD: {label: Hold / manual, token: '3'}
+    readback:
+      readout: setup
+      byte: 2
+      cases:
+        - {clear: 1, value: INT}
+        - {clear: 2, value: EXT}
+        - {clear: 4, value: HOLD}
+  high_res:
+    kind: bool
+    label: High resolution (6.5 digits)
+    set: 'H{value}'
+    values: {'on': '1', 'off': '0'}
+    readback: {readout: setup, byte: 2, cases: [{clear: 8, value: 'on'}], default: 'off'}
+  autocal:
+    kind: bool
+    label: Auto-cal
+    set: 'A{value}'
+    values: {'on': '1', 'off': '0'}
+    readback: {readout: setup, byte: 2, cases: [{set: 64, value: 'on'}], default: 'off'}
+  math:
+    kind: enum
+    label: Math
+    description: 'Scale: (X - Z) / Y. % error: (X - Y) / Y x 100.'
+    set: 'M{value}'
+    options:
+      'OFF':     {label: 'Off', token: '3'}
+      SCALE:     {label: 'Scale (X-Z)/Y', token: '1'}
+      PCT_ERROR: {label: '% error (X-Y)/Y', token: '2'}
+    readback:
+      readout: setup
+      byte: 1
+      cases:
+        - {equals: 59, value: 'OFF'}
+        - {equals: 62, value: SCALE}
+        - {equals: 61, value: PCT_ERROR}
+  math_y:
+    kind: number
+    label: Math constant Y
+    set: 'EY{value}SY'     # enter the number, store it in Y
+  math_z:
+    kind: number
+    label: Math constant Z
+    set: 'EZ{value}SZ'
+
+readouts:
+  reading:
+    label: Reading
+    description: Triggered (GET) then read, so each reading is fresh; this puts the meter in remote.
+    read: true
+    trigger: get
+    parse: number
+    poll: 1s
+  setup:
+    label: Setup (status bytes)
+    description: B, then talk. Four characters decoded into the settings above.
+    query: 'B'
+    parse: text
+    clear_srq: true
+
+roles:
+  meter:
+    function: function
+    functions: {dcv: DCV, acv: ACV, ohm2: OHM, ohm4: OHMF}
+    reading: reading
+    range: range
+    ranges:
+      dcv:  {'0.1': 0.1, '1': 1, '10': 10, '100': 100, '1000': 1000}
+      acv:  {'1': 1, '10': 10, '100': 100, '1000': 1000}
+      ohm2: {'0.1': 100, '1': 1000, '10': 10000, '100': 100000, '1000': 1000000, '10000': 10000000}
+      ohm4: {'0.1': 100, '1': 1000, '10': 10000, '100': 100000, '1000': 1000000, '10000': 10000000}
+
+menu:
+  - Measure: [function, range, trigger, high_res, reading]
+  - Math: [math, math_y, math_z]
+  - System: [autocal, setup]
+
+sim:
+  readouts:
+    reading: {value: -0.150430, noise: 0.0005}
+    setup: {value: ';N=>'}     # as read from the bench unit: math off, internal trigger, autorange, auto-cal on, 1 V, DC volts

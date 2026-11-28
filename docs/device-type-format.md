@@ -101,7 +101,26 @@ controls:
   the control reads the readout, every reading of it (polled ones too) updates the control, and
   the value is reported with source `inferred`. A set is still reported as `assumed` until the
   next reading. The HP 6632A's output uses it: `STS?` has CV, +CC or -CC set only while the
-  output is on.
+  output is on. `infer` also takes the `cases` form below.
+- **readback** (bool and enum controls without `get`): the setting is encoded in a status
+  readout, and decoding it is the real setting, reported with source `read`. A get reads the
+  readout; a set is followed by reading it again, so the reply shows what the instrument took.
+
+  ```yaml
+  readback:
+    readout: setup        # parse: text (bytes of a status string) or int
+    byte: 2               # 1-based character of a text readout; omit to use the int value
+    cases:                # first match wins; each case may give its own byte
+      - {clear: 16, value: AUTO}          # all these bits clear
+      - {byte: 3, equals: 62, value: '1'} # exactly this value
+      - {set: 64, value: 'on'}            # all these bits set;  any: n = any of them set
+    default: 'off'        # optional; otherwise no match leaves the value unknown
+  ```
+
+  Values must be options of the enum (or `on`/`off`). The HP 3455A decodes its whole setup from
+  the four bytes `B` makes it send.
+- **restore** (per control, default true): `restore: false` keeps a control out of the saved
+  settings (see *Restoring settings*).
 - **enum:** `options` maps each value to `{label, token, response, match}`; `token` (default: the
   name) goes into `{value}`; a get response is matched against `response` (default: the token)
   or the `match` regex. Clients send the option name (case-insensitive).
@@ -116,7 +135,7 @@ readouts:
     label: Measured voltage
     unit: V
     query: 'MEAS:VOLT? {channel}'
-    parse: number         # number (first number in the text) | int | bool | text | enum | {regex, as}
+    parse: number         # number (first number in the text) | int | bool | text | enum | list | {regex, as}
     poll: 3s              # polled at this interval while someone is subscribed; omit for on demand
   reading:
     read: true            # talk-only: no command, just address the instrument to talk
@@ -124,6 +143,8 @@ readouts:
 ```
 
 `parse: {regex: 'VOUT\s+(\S+)', as: number}` applies the regex first and parses group 1.
+`parse: list` splits on commas into a list of numbers (a trace). `clear_srq: true` follows the
+query with a serial poll, for an instrument that raises SRQ when asked for its status (3455A `B`).
 
 ## Actions
 
@@ -134,7 +155,47 @@ actions:
     send: ['*RST']        # one or more commands, may use {channel} on per-channel actions
     confirm: true         # clients ask before running it
     refresh: true         # read all settings back afterwards
+    resets: true          # returns the instrument to power-on settings: forget the saved settings
 ```
+
+## Restoring settings
+
+```yaml
+restore: true             # top level; default false
+```
+
+With `restore: true` the server remembers the last value set through it for each control (in
+`<data_dir>/state/<instance>.json`). It checks every 5 s that the instrument is there with a serial
+poll (which doesn't put it in remote), and when it comes back after being off or absent the
+server reapplies the remembered settings in the type's control order, then sends a `restored`
+event. Use it for instruments that forget their setup at power-off and can't report it. An action
+with `resets: true` clears the saved settings; an instance can opt out with `restore: false`.
+
+## Display
+
+A type can describe a graphical display for the web client. The only kind so far is a network
+analyzer (the HP 8714ES):
+
+```yaml
+display:
+  kind: network_analyzer
+  formatted: trace        # readout, parse: list: one value per point, in the display format
+  complex: complex        # readout, parse: list: real, imaginary pairs (Smith and polar)
+  start: start            # controls giving the sweep (per channel)
+  stop: stop
+  points: points
+  format: format          # enum: MLOG, PHAS, SMIT, POL, ... picks the plot
+  enabled: enabled        # optional: which channels are shown
+  scale: scale            # optional: per division, reference value and position
+  ref_level: ref_level
+  ref_position: ref_position
+  measurement: measurement
+  marker: marker          # optional marker 1: on/off, frequency, value
+  marker_freq: marker_freq
+  marker_value: marker_value
+```
+
+Every name refers to one of the type's own controls or readouts, and the server checks them.
 
 ## Presentation
 
@@ -170,12 +231,17 @@ roles:
     nplc: nplc                  # control: integration time in power-line cycles
     autozero: autozero          # control
     offset_comp: offset_comp    # control: offset-compensated ohms
+    ranges:                     # named ranges: {function: {range option: full scale}} (optional)
+      dcv: {R2: 0.1, R3: 1, R4: 10}
     autocal: autocal_ohms       # action: self-calibration
     reset: reset                # action
   thermometer:                  # Thermometer: read() in C
     temperature: temp           # readout (required)
     unit: C                     # C, F or K (default C)
 ```
+
+With `ranges`, `configure(range=5)` picks the smallest range that covers 5 in the present
+function, and `range="auto"` uses an `AUTO` range option when there is no autorange control.
 
 Standard meter function names: `dcv acv acdcv dci aci acdci ohm2 ohm4 freq period temp cap diode
 cont`. Required fields: supply `voltage current output`; meter `reading`; thermometer
@@ -196,4 +262,7 @@ sim:
     v_meas: {follows: voltage, when: output}         # same channel's setting while `output` is on
     reading: {value: 1.2345678, noise: 0.0000005}
     status: {value: 1024, value_on: 1025, when: output}   # value_on while `output` is on
+    trace: {sweep: points}                 # a list, one value per point of the `points` control
+    complex: {sweep: points, complex: true}   # real, imaginary pairs
+  state: {points: 201, format: MLOG}       # starting values of controls
 ```

@@ -118,9 +118,9 @@ class LinuxGpibBackend(Backend):
     def trigger(self, pad, sad):
         self._check(self._lib.ibtrg(self._dev(pad, sad, 3.0)), "trigger %d" % pad)
 
-    def serial_poll(self, pad, sad):
+    def serial_poll(self, pad, sad, timeout=3.0):
         byte = ctypes.c_char()
-        self._check(self._lib.ibrsp(self._dev(pad, sad, 3.0), ctypes.byref(byte)), "serial poll %d" % pad)
+        self._check(self._lib.ibrsp(self._dev(pad, sad, timeout), ctypes.byref(byte)), "serial poll %d" % pad)
         return byte.value[0] if byte.value else 0
 
     # -- bus ----------------------------------------------------------------

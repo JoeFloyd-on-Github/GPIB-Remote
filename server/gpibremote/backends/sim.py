@@ -5,6 +5,7 @@ values, get commands return them, readouts follow the type's `sim:` hints. SimIn
 the older hand-written SCPI state machine, kept for the phase-0 tests.
 """
 
+import math
 import random
 import re
 import threading
@@ -97,6 +98,9 @@ class TypeSimInstrument:
         for name, d in dtype.controls.items():
             for ch in (list(dtype.channels) if d.get("per_channel") else [None]):
                 self.state[(name, ch)] = self._default(d, ch)
+        for name, v in (sim.get("state") or {}).items():   # starting values, e.g. points: 201
+            for key in [k for k in self.state if k[0] == name]:
+                self.state[key] = v
         self.outq, self.errors = [], []
         self.status_byte = 0
         self.remote = False
@@ -130,6 +134,17 @@ class TypeSimInstrument:
 
     def _readout(self, name, ch):
         spec = self.sim_readouts.get(name) or {}
+        if "sweep" in spec:    # a trace: one value (or a real, imaginary pair) per point
+            n = max(2, int(self.state.get((spec["sweep"], ch), 0) or 201))
+            out = []
+            for i in range(n):
+                x = i / (n - 1)
+                if spec.get("complex"):
+                    r, th = 0.85 - 0.6 * x, -6 * math.pi * x
+                    out += [r * math.cos(th), r * math.sin(th)]
+                else:
+                    out.append(-45 + 42 * math.exp(-((x - 0.45) / 0.09) ** 2) + random.uniform(-0.3, 0.3))
+            return ",".join("%+.11E" % v for v in out)
         if "follows" in spec:
             on = self.state.get((spec["when"], None), True) if spec.get("when") else True
             value = self.state.get((spec["follows"], ch), 0.0) if on else 0.0
@@ -267,7 +282,7 @@ class SimBackend(Backend):
         with self._lock:
             self._inst(pad).triggers += 1
 
-    def serial_poll(self, pad, sad):
+    def serial_poll(self, pad, sad, timeout=3.0):
         with self._lock:
             return self._inst(pad).status_byte
 

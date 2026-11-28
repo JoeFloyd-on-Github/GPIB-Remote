@@ -8,7 +8,9 @@ that is logged and the holder is told.
 """
 
 import asyncio
+import json
 import logging
+import os
 import re
 import time
 
@@ -50,10 +52,18 @@ class Lock:
                 "since": self.since, "idle": round(time.time() - self.last, 1)}
 
 
+PRESENCE_EVERY = 5.0      # seconds between presence checks of an instrument whose settings are restored
+PRESENCE_TIMEOUT = 1.0    # serial-poll timeout for that check
+
+
 class InstanceRuntime:
-    def __init__(self, raw, dtype, bus, hub):
+    def __init__(self, raw, dtype, bus, hub, state_dir=None):
         self.hub = hub
         self.bus = bus
+        self.state_dir = state_dir
+        self._last_ok = 0.0        # monotonic time of the last successful bus operation
+        self._last_presence = 0.0
+        self._restoring = False
         self.poll_task = None
         self.lock = None
         self.cache = {}            # key -> {"value", "t", "source"}
@@ -62,7 +72,9 @@ class InstanceRuntime:
         self._last_error_event = 0.0
         self._ready = False
         self._next_poll = {}
+        self.saved = {}            # key -> value: settings to restore (types with restore: true)
         self.update(raw, dtype)
+        self.saved = self._load_saved()
 
     def update(self, raw, dtype):
         self.raw = raw
@@ -78,6 +90,73 @@ class InstanceRuntime:
         self._ready = False
         self._next_poll = {}
         self.cache = {k: v for k, v in self.cache.items() if self._known(k)}
+        self.saved = {k: v for k, v in self.saved.items() if self._known(k)}
+
+    # -- remembered settings (restored when the instrument appears) -----------------
+    @property
+    def restore_enabled(self):
+        return self.t.restore and self.raw.get("restore", True) is not False
+
+    def _saved_path(self):
+        return os.path.join(self.state_dir, "%s.json" % self.id) if self.state_dir else None
+
+    def _load_saved(self):
+        path = self._saved_path()
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: v for k, v in (data.get("settings") or {}).items() if self._known(k)}
+        except (OSError, ValueError) as exc:
+            log.warning("%s: can't read saved settings %s: %s", self.id, path, exc)
+            return {}
+
+    def _write_saved(self):
+        path = self._saved_path()
+        if not path:
+            return
+        try:
+            os.makedirs(self.state_dir, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"instance": self.id, "type": self.t.ref, "settings": self.saved}, f, indent=1)
+            os.replace(tmp, path)
+        except OSError as exc:
+            log.warning("%s: can't save settings: %s", self.id, exc)
+
+    def _remember(self, key, d, value):
+        if self.restore_enabled and d.get("restore", True) is not False:
+            if self.saved.get(key, object()) != value:
+                self.saved[key] = value
+                self._write_saved()
+
+    def forget_saved(self):
+        if self.saved:
+            self.saved = {}
+            self._write_saved()
+
+    async def _restore(self):
+        """Reapply the remembered settings, in the type's control order (function before range)."""
+        if self._restoring or not self.saved:
+            return
+        self._restoring = True
+        applied = []
+        try:
+            for key in self.t.keys("controls"):
+                if key not in self.saved:
+                    continue
+                section, name, ch, d = self.t.item(key)
+                if d.get("restore", True) is False:
+                    continue
+                await self._apply(key, d, ch, self.t.coerce(d, self.saved[key], ch), "server: restore")
+                applied.append(key)
+            audit.info("restored %s: %s", self.id, ", ".join("%s=%r" % (k, self.saved[k]) for k in applied))
+            self.hub.broadcast({"event": "restored", "instance": self.id, "keys": applied}, instance=self.id)
+        except Exception as exc:
+            log.warning("%s: restoring settings stopped after %s: %s", self.id, applied, exc)
+        finally:
+            self._restoring = False
 
     def _known(self, key):
         try:
@@ -137,17 +216,25 @@ class InstanceRuntime:
     def _enc(self, cmd):
         return (cmd + (self.t.write_termination or "")).encode("latin-1")
 
-    async def _transact(self, steps):
+    async def _transact(self, steps, timeout=None, ready=True):
         """steps: list of (kind, command string or None); returns decoded responses."""
-        await self._ensure_ready()
+        if ready:
+            await self._ensure_ready()
         raw = [(k, None if c is None else self._enc(c)) for k, c in steps]
         try:
-            out = await self.bus.call("transaction", self.pad, self.sad, raw, self.t.timeout, self.t.delay)
+            out = await self.bus.call("transaction", self.pad, self.sad, raw,
+                                      self.t.timeout if timeout is None else timeout, self.t.delay)
         except Exception as exc:
             self._set_online(False, str(exc))
             raise
+        self._last_ok = time.monotonic()
         self._set_online(True)
         return [b.decode("latin-1").strip() for b in out]
+
+    async def check_presence(self):
+        """Serial poll: answers when the instrument is on, without putting it in remote."""
+        self._last_presence = time.monotonic()
+        await self._transact([("p", None)], timeout=PRESENCE_TIMEOUT, ready=False)
 
     async def _ensure_ready(self):
         if self._ready:
@@ -164,6 +251,10 @@ class InstanceRuntime:
 
     def _set_online(self, online, error=None):
         changed = online != self.online
+        if online and changed:
+            self._ready = False         # it may have been switched off: send init again
+            if self.restore_enabled and self.saved and not self._restoring:
+                asyncio.ensure_future(self._restore())
         self.online = online
         self.last_error = error
         now = time.time()
@@ -186,14 +277,17 @@ class InstanceRuntime:
     async def get(self, key, fresh=True):
         section, name, ch, d = self.t.item(key)
         template = d.get("get") if section == "controls" else d.get("query")
-        if section == "controls" and d.get("infer") and fresh:
-            # Can't be asked; read the status readout it is judged from (which publishes it).
+        if section == "controls" and (d.get("infer") or d.get("readback")) and fresh:
+            # Can't be asked; read the status readout it is decoded from (which publishes it).
             await self.get(self._infer_source(name, ch))
             return self.cache.get(key) or {"value": None, "t": None, "source": "unknown"}
         if section == "readouts" and not template:      # talk-only readout
             steps = ([("t", None)] if d.get("trigger") == "get" else []) + [("r", None)]
             resp = (await self._transact(steps))[-1]
-            return self._publish_reading(key, self.t.parse(d, resp))
+            try:
+                return self._publish_reading(key, self.t.parse(d, resp))
+            except ValueError as exc:
+                raise DeviceError("bad_response", str(exc))
         if not template or not fresh:
             entry = self.cache.get(key)
             if entry is None:
@@ -204,6 +298,8 @@ class InstanceRuntime:
             steps += [("t", None), ("w", cmd), ("r", None)]
         else:
             steps.append(("q", cmd))
+        if section == "readouts" and d.get("clear_srq"):
+            steps.append(("p", None))   # the query raises SRQ (e.g. 3455A "B"); a serial poll clears it
         resp = (await self._transact(steps))[-1]
         try:
             value = self.t.parse(d, resp)
@@ -219,14 +315,17 @@ class InstanceRuntime:
                             "value": value, "t": entry["t"]}, instance=self.id)
         ch, rname = self.t.split_key(key)
         for cname in self.t.inferred_by.get(rname, ()):
-            if isinstance(value, int) and not isinstance(value, bool):
-                on = bool(value & self.t.controls[cname]["infer"]["any_bits"])
+            try:
+                decoded = self.t.status_value(cname, value)
+            except ValueRejected:
+                decoded = None
+            if decoded is not None:
                 ckey = "%s.%s" % (ch, cname) if ch else cname
-                self._publish_state(ckey, on, "inferred", by="server: from %s" % key)
+                self._publish_state(ckey, decoded, self.t.status_spec(cname)[1], by="server: from %s" % key)
         return entry
 
     def _infer_source(self, cname, ch):
-        rname = self.t.controls[cname]["infer"]["readout"]
+        rname = self.t.status_spec(cname)[0]["readout"]
         return "%s.%s" % (ch, rname) if ch else rname
 
     def _publish_state(self, key, value, source, by=None):
@@ -246,6 +345,12 @@ class InstanceRuntime:
             raise ValueRejected("%s is a readout and can't be set" % key)
         self.check_control(session)
         value = self.t.coerce(d, value, ch, self.limits.get(key))
+        audit.info("%s set %s %s = %r", session, self.id, key, value)
+        entry = await self._apply(key, d, ch, value, str(session.who))
+        self._remember(key, d, value)
+        return entry
+
+    async def _apply(self, key, d, ch, value, by):
         steps, cmd = self._item_steps(d["set"], d, ch, self.t.format_value(d, value))
         steps.append(("w", cmd))
         if d.get("get"):
@@ -253,7 +358,6 @@ class InstanceRuntime:
             steps.append(("q", gcmd))
         if self.t.check_errors and self.t.error_query:
             steps.append(("q", self.t.error_query))
-        audit.info("%s set %s %s = %r", session, self.id, key, value)
         resp = await self._transact(steps)
         if self.t.check_errors and self.t.error_query:
             self._check_error(resp.pop())
@@ -262,8 +366,16 @@ class InstanceRuntime:
                 value = self.t.parse(d, resp[-1])
             except ValueError as exc:
                 raise DeviceError("bad_response", str(exc))
-            return self._publish_state(key, value, "read", by=str(session.who))
-        return self._publish_state(key, value, "assumed", by=str(session.who))
+            return self._publish_state(key, value, "read", by=by)
+        if d.get("readback"):     # read the status it is decoded from, to show what the instrument took
+            try:
+                await self.get(self._infer_source(self.t.split_key(key)[1], ch))
+            except (DeviceError, ValueError) as exc:
+                log.debug("%s: read back %s: %s", self.id, key, exc)
+            entry = self.cache.get(key)
+            if entry is not None and entry["source"] == "read":
+                return entry
+        return self._publish_state(key, value, "assumed", by=by)
 
     def _check_error(self, resp):
         if self.t.error_none and not re.search(self.t.error_none, resp):
@@ -282,6 +394,8 @@ class InstanceRuntime:
         steps += [("w", self.t.render(c, channel)) for c in a["send"]]
         audit.info("%s action %s %s%s", session, self.id, name, " " + channel if channel else "")
         await self._transact(steps)
+        if a.get("resets"):     # back to power-on settings: nothing left to restore
+            self.forget_saved()
         if a.get("refresh"):
             for key in list(self.cache):
                 if self.cache[key]["source"] == "assumed":
@@ -294,7 +408,7 @@ class InstanceRuntime:
         out = {}
         for key in self.t.keys("controls"):
             d = self.t.item(key)[3]
-            if d.get("get") or d.get("infer"):
+            if d.get("get") or d.get("infer") or d.get("readback"):
                 out[key] = await self.get(key)
         return out
 
@@ -348,6 +462,11 @@ class InstanceRuntime:
         while True:
             try:
                 await asyncio.sleep(0.2)
+                if self.restore_enabled:
+                    now = time.monotonic()
+                    every = PRESENCE_EVERY if self.online else 2 * PRESENCE_EVERY
+                    if now - max(self._last_ok, self._last_presence) > every:
+                        await self.check_presence()
                 if self.poll_mode == "off" or (self.poll_mode == "subscribed" and not self.subscribers):
                     continue
                 now = time.monotonic()
@@ -370,6 +489,7 @@ class Manager:
 
     def __init__(self, registry, buses, hub, lock_idle=900.0):
         self.registry = registry
+        self.state_dir = os.path.join(registry.data_dir, "state")
         self.buses = buses
         self.hub = hub
         self.lock_idle = lock_idle
@@ -386,7 +506,7 @@ class Manager:
         if bus is None:
             log.error("instance %s: no board %s", raw["id"], raw["address"].get("board", 0))
             return None
-        rt = InstanceRuntime(raw, self.registry.get_type(raw["type"]), bus, self.hub)
+        rt = InstanceRuntime(raw, self.registry.get_type(raw["type"]), bus, self.hub, self.state_dir)
         self.runtimes[rt.id] = rt
         rt.start()
         return rt

@@ -3,6 +3,7 @@
 
 import { h, clear, valueText, age, bounds, rangeText, lockText, toast, errText, layoutOf, itemOf, decimals } from "./util.js";
 import { TimeChart } from "./chart.js";
+import { AnalyzerDisplay } from "./vna.js";
 
 const WINDOWS = [[60, "1 min"], [300, "5 min"], [900, "15 min"], [3600, "1 h"], [14400, "4 h"]];
 
@@ -24,6 +25,7 @@ export class InstrumentView {
     this.off();
     clearInterval(this.timer);
     for (const c of this.charts.values()) c.destroy();
+    if (this.vna) this.vna.destroy();
     if (this.subscribed) this.app.client.unsubscribe(this.id);
   }
 
@@ -71,6 +73,9 @@ export class InstrumentView {
       const c = this.cells.get(ev.key);
       if (c) c.update(e);
       for (const ch of this.charts.values()) if (ch.series.has(ev.key)) ch.redraw();
+      if (this.vna) this.vna.onEvent(ev.key, e);
+    } else if (ev.event === "restored") {
+      toast(this.id + ": settings restored after the instrument came back (" + (ev.keys || []).join(", ") + ")", "ok", 8000);
     } else if (ev.event === "lock") {
       this.lock = ev.lock;
       this.renderLock();
@@ -98,6 +103,7 @@ export class InstrumentView {
       this.state[key] = e;
       const c = this.cells.get(key);
       if (c) c.update(e);
+      if (this.vna) this.vna.onEvent(key, e);
       return true;
     } catch (err) {
       toast(key + ": " + errText(err), "error");
@@ -131,6 +137,7 @@ export class InstrumentView {
       const r = await this.client.request("dev.refresh", { instance: this.id });
       Object.assign(this.state, r.state);
       for (const [k, c] of this.cells) c.update(this.state[k] || {});
+      if (this.vna) { this.vna.build(); }
       if (!quiet) toast("Re-read every setting from the instrument", "ok");
     } catch (err) { toast(errText(err), "error"); }
   }
@@ -171,6 +178,8 @@ export class InstrumentView {
     this.cells.clear();
     for (const c of this.charts.values()) c.destroy();
     this.charts.clear();
+    if (this.vna) { this.vna.destroy(); this.vna = null; }
+    if (m.display && m.display.kind === "network_analyzer") this.vna = new AnalyzerDisplay(this);
     this.statusEl = h("span", { class: "pill" });
     this.lockEl = h("div", { class: "lockbar" });
     const a = s.address;
@@ -189,8 +198,8 @@ export class InstrumentView {
     for (const ent of layoutOf(m)) {
       if (typeof ent === "string") { cards.appendChild(this.card("General", [ent], null)); continue; }
       const [label, items] = Object.entries(ent)[0];
-      if (label === "{channel}") {
-        for (const [ch, cd] of Object.entries(m.channels || {})) cards.appendChild(this.card(cd.label || ch, items, ch));
+      if (label.includes("{channel}")) {    // one card per channel: '{channel}' or e.g. 'Marker {channel}'
+        for (const [ch, cd] of Object.entries(m.channels || {})) cards.appendChild(this.card(label.replace("{channel}", cd.label || ch), items, ch));
       } else {
         cards.appendChild(this.card(label, items, null));
       }
@@ -200,6 +209,7 @@ export class InstrumentView {
       WINDOWS.map(([v, l]) => h("option", { value: v, selected: v === (this.app.prefs.window || 300) }, l)));
     clear(this.el).append(head, this.lockEl,
       m.description ? h("p", { class: "muted desc" }, m.description.trim()) : "",
+      this.vna ? this.vna.el : "",
       cards,
       h("div", { class: "card" },
         h("div", { class: "card-head" }, h("h2", null, "Live readings"), h("span", { class: "spacer" }),
@@ -211,7 +221,7 @@ export class InstrumentView {
     for (const key of this.app.chartKeys(this.id, this.chartable())) this.chartOn(key);
     this.applyLock();
     // Settings nobody has read yet: read them back once, so the page doesn't show "?".
-    const unknown = Object.entries(this.model.controls || {}).some(([n, d]) => d.get &&
+    const unknown = Object.entries(this.model.controls || {}).some(([n, d]) => (d.get || d.readback || d.infer) &&
       Object.entries(this.state).some(([k, e]) => (k === n || k.endsWith("." + n)) && e.value == null));
     if (unknown && this.summary.online !== false && !this.autoRefreshed) { this.autoRefreshed = true; this.refresh(true); }
   }
@@ -223,7 +233,7 @@ export class InstrumentView {
     const seen = new Set();
     const addKey = (name, ch) => {
       const d = (m.readouts || {})[name];
-      if (!d || d.kind === "text" || d.kind === "enum" || d.kind === "bool") return;
+      if (!d || d.kind === "text" || d.kind === "enum" || d.kind === "bool" || ["text", "enum", "bool", "list"].includes(d.parse)) return;
       const key = ch ? ch + "." + name : name;
       if (seen.has(key)) return;
       seen.add(key);
@@ -238,7 +248,7 @@ export class InstrumentView {
           else addKey(it, d.per_channel ? ch : null);
         } else {
           const [label, sub] = Object.entries(it)[0];
-          if (label === "{channel}") for (const c of Object.keys(m.channels || {})) walk(sub, c);
+          if (label.includes("{channel}")) for (const c of Object.keys(m.channels || {})) walk(sub, c);
           else walk(sub, ch);
         }
       }
@@ -345,7 +355,7 @@ export class InstrumentView {
   readoutRow(key, d, label) {
     const val = h("div", { class: "rval big" });
     const ageEl = h("span", { class: "age" });
-    const numeric = !(d.kind === "text" || d.kind === "enum" || d.kind === "bool");
+    const numeric = !(d.kind === "text" || d.kind === "enum" || d.kind === "bool" || ["text", "enum", "bool", "list"].includes(d.parse));
     const chartBox = numeric ? h("input", { type: "checkbox", onchange: () => {
       if (chartBox.checked) this.chartOn(key); else this.chartOff(key);
       this.app.setChartKey(this.id, key, chartBox.checked);
@@ -385,7 +395,10 @@ export class InstrumentView {
     } else if (d.kind === "enum") {
       const sel = h("select", { "data-write": true, "aria-label": d.label || key, onchange: () => this.set(key, sel.value) },
         h("option", { value: "", disabled: true }, "—"),
-        Object.entries(d.options || {}).map(([k, o]) => h("option", { value: k }, k + (o && o.label ? " — " + o.label : ""))));
+        (d.order || Object.keys(d.options || {})).map((k) => {   // d.order: the type's order (JSON puts "1", "10" first)
+          const o = (d.options || {})[k];
+          return h("option", { value: k }, k + (o && o.label ? " — " + o.label : ""));
+        }));
       edit.appendChild(sel);
       update = (e) => { sel.value = e.value == null ? "" : String(e.value); };
     } else {
@@ -424,7 +437,8 @@ export class InstrumentView {
         src.textContent = e.source;
         src.title = e.source === "inferred"
           ? "This instrument can't report the setting; it is judged from " + ((d.infer || {}).readout || "a reading") + "."
-          : "This instrument can't report the setting; this is the last value set.";
+          : "This instrument can't report the setting; this is the last value set." +
+            (this.model.restore ? " The server reapplies it when the instrument is switched on again." : "");
         update(e);
       },
     };

@@ -29,7 +29,7 @@ class ApiTest(unittest.TestCase):
 
     def test_scan_add_and_handles(self):
         found = {f.pad: f for f in self.bench.scan()}
-        self.assertEqual(sorted(found), [5, 6, 16, 17, 22])
+        self.assertEqual(sorted(found), [1, 5, 6, 16, 17, 22])
         self.assertIn("hp.8714es", found[16].types)
         self.assertEqual(found[5].instance, "bench-psu")
         self.assertEqual(found[6].types, ["hp.6632a"])

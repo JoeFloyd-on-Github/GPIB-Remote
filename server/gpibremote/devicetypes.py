@@ -11,7 +11,7 @@ import yaml
 
 SCHEMA = 1
 KINDS = ("number", "bool", "enum", "text")
-PARSERS = ("number", "int", "bool", "text", "enum")
+PARSERS = ("number", "int", "bool", "text", "enum", "list")
 TYPE_NAME = re.compile(r"^[a-z0-9][a-z0-9_\-]*(\.[a-z0-9][a-z0-9_\-]*)+$")
 VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -96,11 +96,14 @@ class DeviceType:
         self.readouts = dict(raw.get("readouts") or {})
         self.actions = dict(raw.get("actions") or {})
         self.safe_off = list(raw.get("safe_off") or [])
-        # readout name -> controls whose on/off state is inferred from it (controls.*.infer)
+        # readout name -> controls whose value is decoded from it (controls.*.infer / readback)
         self.inferred_by = {}
         for cname, d in self.controls.items():
-            if d.get("infer"):
-                self.inferred_by.setdefault(d["infer"]["readout"], []).append(cname)
+            spec = d.get("readback") or d.get("infer")
+            if spec:
+                self.inferred_by.setdefault(spec["readout"], []).append(cname)
+        self.restore = bool(raw.get("restore", False))
+        self.display = raw.get("display") or None
         self.init = list(raw.get("init") or [])
 
     # -- keys ---------------------------------------------------------------
@@ -159,6 +162,49 @@ class DeviceType:
                 raise ValueError("bad bound %r" % v)
             v = (self.channels.get(channel) or {}).get(m.group(1))
         return None if v is None else float(v)
+
+    def status_spec(self, cname):
+        """(spec, source) for a control decoded from a status readout, else (None, None)."""
+        d = self.controls[cname]
+        if d.get("readback"):
+            return d["readback"], "read"
+        if d.get("infer"):
+            return d["infer"], "inferred"
+        return None, None
+
+    def status_value(self, cname, reading):
+        """Decode a control's value from its status readout's value (None if it can't be told).
+
+        Each case tests one byte of a text readout (`byte`, counted from 1) or the integer value:
+        `equals` the whole value, `set` bits all 1, `clear` bits all 0, `any` at least one bit 1.
+        The first case that matches gives the value; otherwise `default`."""
+        spec, _ = self.status_spec(cname)
+        d = self.controls[cname]
+        cases = spec.get("cases")
+        if cases is None:   # infer: {readout, any_bits} (on while any of those bits is set)
+            cases, default = [{"any": spec["any_bits"], "value": True}], False
+        else:
+            default = spec.get("default")
+        for case in cases:
+            b = case.get("byte", spec.get("byte"))
+            if b:
+                if not isinstance(reading, str) or len(reading) < b:
+                    return None
+                v = ord(reading[b - 1])
+            elif isinstance(reading, bool) or not isinstance(reading, int):
+                return None
+            else:
+                v = reading
+            if "equals" in case and v != case["equals"]:
+                continue
+            if "set" in case and v & case["set"] != case["set"]:
+                continue
+            if "clear" in case and v & case["clear"]:
+                continue
+            if "any" in case and not v & case["any"]:
+                continue
+            return self.coerce(d, case["value"])
+        return None if default is None else self.coerce(d, default)
 
     def coerce(self, d, value, channel=None, limits=None):
         """Check a client value against a control definition; return the canonical value."""
@@ -224,6 +270,11 @@ class DeviceType:
                 raise ValueError("response %r does not match %r" % (text, p["regex"]))
             text = m.group(1) if m.groups() else m.group(0)
             p = p.get("as", "number")
+        if p == "list":     # comma-separated numbers (a trace)
+            try:
+                return [float(x) for x in text.split(",") if x.strip()]
+            except ValueError:
+                raise ValueError("not a list of numbers: %r..." % text[:40])
         if p in ("number", "int"):
             m = _FLOAT.search(text)
             if not m:
@@ -252,12 +303,16 @@ class DeviceType:
                 "title": self.title, "verified": self.verified, "builtin": self.builtin,
                 "manufacturer": self.raw.get("manufacturer"), "model": self.raw.get("model"),
                 "description": self.raw.get("description"),
-                "channels": self.channels, "controls": self.controls, "readouts": self.readouts,
+                "channels": self.channels, "readouts": self.readouts,
+                # enum options keep the type's order (clients' JSON objects put "1", "10" first)
+                "controls": {k: dict(v, order=list(v["options"])) if isinstance(v.get("options"), dict) else v
+                             for k, v in self.controls.items()},
                 "actions": {k: {kk: vv for kk, vv in v.items() if kk != "send"}
                             for k, v in self.actions.items()},
                 "menu": self.raw.get("menu") or [], "panel": self.raw.get("panel"),
                 "identify": {"probe": self.probe, "match": self.match},
-                "has_safe_off": bool(self.safe_off), "roles": self.raw.get("roles") or {}}
+                "has_safe_off": bool(self.safe_off), "roles": self.raw.get("roles") or {},
+                "display": self.display, "restore": self.restore}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -275,7 +330,7 @@ def _check_template(errors, path, tpl, allowed):
 ROLE_FIELDS = {
     "supply": {"voltage": "c", "current": "c", "output": "c", "v_meas": "r", "i_meas": "r",
                "ovp": "c", "channel": None},
-    "meter": {"function": "c", "functions": None, "reading": "r", "range": "c", "autorange": "c",
+    "meter": {"function": "c", "functions": None, "ranges": None, "reading": "r", "range": "c", "autorange": "c",
               "nplc": "c", "autozero": "c", "offset_comp": "c", "autocal": "a", "reset": "a"},
     "thermometer": {"temperature": "r", "unit": None},
 }
@@ -331,32 +386,127 @@ def _check_roles(e, raw, channels):
                         e.append("%s.functions.%s: not a standard function (%s)" % (p, std, ", ".join(METER_FUNCTIONS)))
                     elif opt not in opts:
                         e.append("%s.functions.%s: %r is not an option of %s" % (p, std, opt, spec.get("function")))
+        if role == "meter" and isinstance(spec.get("ranges"), dict):
+            rc = (raw.get("controls") or {}).get(spec.get("range")) or {}
+            ropts = rc.get("options") or {}
+            if rc.get("kind") != "enum":
+                e.append("%s.ranges: needs range, an enum control" % p)
+            for std, table in spec["ranges"].items():
+                if std not in METER_FUNCTIONS:
+                    e.append("%s.ranges.%s: not a standard function" % (p, std))
+                elif not isinstance(table, dict) or not table:
+                    e.append("%s.ranges.%s: a mapping of range option to full scale" % (p, std))
+                else:
+                    for opt, fs in table.items():
+                        if opt not in ropts:
+                            e.append("%s.ranges.%s: %r is not an option of %s" % (p, std, opt, spec.get("range")))
+                        elif isinstance(fs, bool) or not isinstance(fs, (int, float)) or fs <= 0:
+                            e.append("%s.ranges.%s.%s: a positive full-scale value" % (p, std, opt))
+        elif role == "meter" and "ranges" in spec:
+            e.append("%s.ranges: a mapping of standard function to {range option: full scale}" % p)
         if role == "meter" and "functions" in spec and "function" not in spec:
             e.append("%s.function: required with functions" % p)
 
 
-def _check_infer(e, p, d, readouts):
-    """controls.X.infer: an on/off setting the instrument can't report, judged from a status
-    readout: on when any of `any_bits` is set in the readout's (integer) value, otherwise off."""
-    inf = d["infer"]
-    if d.get("kind") != "bool":
-        e.append("%s.infer: only for kind bool" % p)
+_CASE_KEYS = {"equals", "set", "clear", "any", "byte", "value"}
+
+
+def _check_status(e, p, d, readouts, key):
+    """controls.X.infer / readback: a setting decoded from a status readout (see status_value)."""
+    spec = d[key]
+    path = "%s.%s" % (p, key)
     if d.get("get"):
-        e.append("%s.infer: not with get (the instrument reports it)" % p)
-    if not isinstance(inf, dict) or set(inf) != {"readout", "any_bits"}:
-        e.append("%s.infer: needs exactly readout and any_bits" % p)
+        e.append("%s: not with get (the instrument reports it)" % path)
+    if "infer" in d and "readback" in d:
+        e.append("%s: use infer or readback, not both" % p)
+    if not isinstance(spec, dict) or not isinstance(spec.get("readout"), str):
+        e.append("%s: needs readout" % path)
         return
-    rd = readouts.get(inf["readout"])
+    rd = readouts.get(spec["readout"])
     if not isinstance(rd, dict):
-        e.append("%s.infer.readout: no such readout %r" % (p, inf["readout"]))
-    else:
-        if rd.get("parse") != "int":
-            e.append("%s.infer.readout: %r must have parse: int" % (p, inf["readout"]))
-        if bool(rd.get("per_channel")) != bool(d.get("per_channel")):
-            e.append("%s.infer.readout: per_channel must match the control's" % p)
-    bits = inf["any_bits"]
-    if isinstance(bits, bool) or not isinstance(bits, int) or bits <= 0:
-        e.append("%s.infer.any_bits: a positive integer (a bit mask)" % p)
+        e.append("%s.readout: no such readout %r" % (path, spec["readout"]))
+        rd = None
+    elif bool(rd.get("per_channel")) != bool(d.get("per_channel")):
+        e.append("%s.readout: per_channel must match the control's" % path)
+    if "any_bits" in spec:     # the original form: an on/off setting, on while any bit is set
+        if key != "infer" or set(spec) != {"readout", "any_bits"}:
+            e.append("%s: needs exactly readout and any_bits (or readout and cases)" % path)
+        if d.get("kind") != "bool":
+            e.append("%s: only for kind bool" % path)
+        if rd is not None and rd.get("parse") != "int":
+            e.append("%s.readout: %r must have parse: int" % (path, spec["readout"]))
+        bits = spec["any_bits"]
+        if isinstance(bits, bool) or not isinstance(bits, int) or bits <= 0:
+            e.append("%s.any_bits: a positive integer (a bit mask)" % path)
+        return
+    extra = set(spec) - {"readout", "byte", "cases", "default"}
+    if extra:
+        e.append("%s: unknown keys %s" % (path, ", ".join(sorted(extra))))
+    if d.get("kind") not in ("bool", "enum"):
+        e.append("%s: only for kind bool or enum" % path)
+    cases = spec.get("cases")
+    if not isinstance(cases, list) or not cases:
+        e.append("%s.cases: a non-empty list" % path)
+        return
+    dt = DeviceType.__new__(DeviceType)        # just for coerce()
+    uses_byte = False
+    for i, c in enumerate(cases):
+        cp = "%s.cases[%d]" % (path, i)
+        if not isinstance(c, dict) or "value" not in c or not (set(c) & {"equals", "set", "clear", "any"}):
+            e.append("%s: a mapping with value and at least one of equals, set, clear, any" % cp)
+            continue
+        if set(c) - _CASE_KEYS:
+            e.append("%s: unknown keys %s" % (cp, ", ".join(sorted(set(c) - _CASE_KEYS))))
+        for k in ("equals", "set", "clear", "any", "byte"):
+            if k in c and (isinstance(c[k], bool) or not isinstance(c[k], int) or c[k] < 0):
+                e.append("%s.%s: a non-negative integer" % (cp, k))
+        uses_byte = uses_byte or bool(c.get("byte", spec.get("byte")))
+        try:
+            dt.coerce(d, c["value"])
+        except ValueRejected as exc:
+            e.append("%s.value: %s" % (cp, exc))
+    if "default" in spec:
+        try:
+            dt.coerce(d, spec["default"])
+        except ValueRejected as exc:
+            e.append("%s.default: %s" % (path, exc))
+    if rd is not None:
+        want = "text" if uses_byte else "int"
+        if rd.get("parse") != want:
+            e.append("%s.readout: %r must have parse: %s (%s)" % (
+                path, spec["readout"], want,
+                "cases test bytes of its text" if uses_byte else "cases test its integer value"))
+
+
+def _check_display(e, raw):
+    """display: what a client draws as the instrument's screen (kind network_analyzer)."""
+    disp = raw.get("display")
+    if disp is None:
+        return
+    if not isinstance(disp, dict) or disp.get("kind") != "network_analyzer":
+        e.append("display.kind: network_analyzer (the only kind so far)")
+        return
+    controls, readouts = raw.get("controls") or {}, raw.get("readouts") or {}
+    need = {"formatted": readouts, "complex": readouts, "start": controls, "stop": controls,
+            "points": controls, "format": controls}
+    optional = {"enabled": controls, "scale": controls, "ref_level": controls, "ref_position": controls,
+                "measurement": controls, "marker": controls, "marker_freq": controls,
+                "marker_value": readouts}
+    for k in set(disp) - set(need) - set(optional) - {"kind"}:
+        e.append("display.%s: unknown key" % k)
+    for k, sec in list(need.items()) + list(optional.items()):
+        if k not in disp:
+            if k in need:
+                e.append("display.%s: required" % k)
+            continue
+        if disp[k] not in sec:
+            e.append("display.%s: %r is not one of the type's %s" % (
+                k, disp[k], "readouts" if sec is readouts else "controls"))
+        elif not (sec[disp[k]] or {}).get("per_channel") and raw.get("channels"):
+            e.append("display.%s: %r must be per_channel" % (k, disp[k]))
+    for k in ("formatted", "complex"):
+        if disp.get(k) in readouts and (readouts[disp[k]] or {}).get("parse") != "list":
+            e.append("display.%s: %r must have parse: list" % (k, disp[k]))
 
 
 def validate(raw):
@@ -372,7 +522,7 @@ def validate(raw):
         e.append("version: required, quoted semantic version like '1.0.0'")
     known = {"schema", "type", "version", "title", "manufacturer", "model", "description", "verified",
              "connection", "identify", "errors", "init", "channels", "controls", "readouts", "actions",
-             "safe_off", "menu", "panel", "sim", "notes", "references", "roles"}
+             "safe_off", "menu", "panel", "sim", "notes", "references", "roles", "restore", "display"}
     for k in raw:
         if k not in known:
             e.append("%s: unknown top-level key" % k)
@@ -450,8 +600,11 @@ def validate(raw):
                     _check_template(e, p + ".set", d["set"], allowed)
                 if d.get("get"):
                     _check_template(e, p + ".get", d["get"], ["channel"])
-                if "infer" in d:
-                    _check_infer(e, p, d, raw.get("readouts") or {})
+                for key in ("infer", "readback"):
+                    if key in d:
+                        _check_status(e, p, d, raw.get("readouts") or {}, key)
+                if "restore" in d and not isinstance(d["restore"], bool):
+                    e.append("%s.restore: true or false" % p)
                 if kind == "enum" and not isinstance(d.get("options"), dict):
                     e.append("%s.options: required mapping for enum" % p)
                 for b in ("min", "max"):
@@ -469,6 +622,8 @@ def validate(raw):
                     e.append("%s: needs 'query' or 'read: true'" % p)
                 if d.get("query"):
                     _check_template(e, p + ".query", d["query"], allowed)
+                if "clear_srq" in d and not isinstance(d["clear_srq"], bool):
+                    e.append("%s.clear_srq: true or false" % p)
                 if d.get("trigger") not in (None, "get"):
                     e.append("%s.trigger: only 'get' is supported" % p)
                 try:
@@ -511,6 +666,9 @@ def validate(raw):
     if unnamed and channels and not ch.get("select"):
         e.append("channels.select: required, since %s doesn't name its channel" % unnamed[0])
     _check_roles(e, raw, channels)
+    _check_display(e, raw)
+    if "restore" in raw and not isinstance(raw["restore"], bool):
+        e.append("restore: true or false")
     for k in ("init", "safe_off"):
         v = raw.get(k)
         if v is not None and (not isinstance(v, list) or not all(isinstance(c, str) for c in v)):

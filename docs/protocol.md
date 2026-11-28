@@ -60,7 +60,7 @@ the holder disconnects, or after the server's idle timeout (default 15 min). `de
 | op | Parameters | Result |
 |---|---|---|
 | `types.list` | | `types`: `[{type, versions, latest, title, verified, builtin}]` |
-| `types.get` | `type` (or `type@version`), `version`, `format`: `model` (default), `yaml`, `both` | `ref`, `hash`, `model` (includes `roles`) and/or `yaml` |
+| `types.get` | `type` (or `type@version`), `version`, `format`: `model` (default), `yaml`, `both` | `ref`, `hash`, `model` (includes `roles`, `display`, `restore`) and/or `yaml` |
 | `types.validate` | `yaml` | `valid`, `errors`, `ref`, `exists` |
 | `types.put` | `yaml`, `message` | `ref`, `hash`, `added` (false if identical to the stored version). Different content under an existing version is a `conflict` |
 | `types.history` | `type`, `limit` | `commits`: `[{rev, author, date, message}]` |
@@ -79,14 +79,15 @@ the holder disconnects, or after the server's idle timeout (default 15 min). `de
 Instance document fields: `overrides.limits` (`{key: [min, max]}`), `overrides.poll`
 (`{readout: interval or "off"}`), `overrides.labels`, `safe_state.on_server_stop` and
 `safe_state.on_client_disconnect` (`leave` default, or `outputs_off`), `poll_mode`
-(`subscribed` default: poll only while someone is subscribed; `always`; `off`), `notes`.
+(`subscribed` default: poll only while someone is subscribed; `always`; `off`), `restore`
+(false stops the server reapplying saved settings for a type with `restore: true`), `notes`.
 
 ### Device control
 | op | Parameters | Result |
 |---|---|---|
 | `dev.state` | `instance` | `state`: every key's last value, `summary` |
 | `dev.get` | `instance`, `key`, `fresh` (default true: ask the instrument) | value |
-| `dev.set` | `instance`, `key`, `value` | value as read back (or `assumed`) |
+| `dev.set` | `instance`, `key`, `value` | value as read back (`read`, or `assumed`) |
 | `dev.action` | `instance`, `action`, `channel` | |
 | `dev.refresh` | `instance` | `state` after reading back every readable setting |
 | `dev.lock` | `instance`, `force`, `reason` | `lock`: `{holder, session, since, idle}` |
@@ -116,5 +117,6 @@ or `base64`, `max_bytes` (default 1 MiB, max 16 MiB).
 | `lock` | everyone | `instance`, `lock` (null when free), `reason` |
 | `lock_broken`, `lock_expired` | the former holder | `instance`, `by`, `reason` |
 | `status` | everyone | `instance`, `online`, `error` |
+| `restored` | subscribers | `instance`, `keys`: the settings reapplied after the instrument came back |
 | `instance` | everyone | `op` (`created`/`updated`/`deleted`), `id`, `revision` |
 | `type` | everyone | `op` (`added`), `ref` |

@@ -1,0 +1,197 @@
+schema: 1
+type: hp.3456a
+version: '1.0.0'
+title: HP 3456A Digital Voltmeter
+manufacturer: Hewlett-Packard
+model: 3456A
+verified: false         # registers and triggered readings checked on the bench unit (address 17); other codes from the manual
+description: >
+  6.5-digit voltmeter: DC, AC and AC+DC volts, voltage ratios, 2- and 4-wire ohms (also offset
+  compensated), with math and statistics. The registers (readings per trigger, digits,
+  integration, delay, math constants) are read back from the meter; function, range, trigger,
+  autozero, filter and math can't be, so they show the last value set ("assumed"). Settings made
+  through the server are remembered and reapplied when the meter is next switched on. Careful:
+  the ohms functions put a test current through whatever is on the input terminals.
+references:
+  - HP 3456A Operating and Service Manual, section III (Table 3-9 program codes)
+  - HP 3456A quick reference card (M. Hepperle, 2016)
+notes: >
+  Serial poll bits: 1 front-panel SRQ, 2 program memory done, 4 data ready, 8 trigger too fast,
+  16 syntax / illegal state, 32 program memory error, 64 RQS, 128 limit failure. No setting is
+  encoded in it. After a register recall (RE<x>) the meter stops sending readings until it is
+  triggered, so the reading here is always triggered (GET) first.
+
+connection:
+  eos: "\n"             # readings end with CR LF
+  write_termination: "\n"
+  timeout: 10s          # 100 power-line cycles is about 2 s per reading, more with several per trigger
+
+identify:
+  probe: null           # no identity query
+
+restore: true           # remember settings and reapply them when the meter is switched on again
+
+controls:
+  function:
+    kind: enum
+    label: Function
+    set: '{value}'
+    options:
+      DCV:         {label: DC volts, token: 'S0F1'}
+      ACV:         {label: AC volts, token: 'S0F2'}
+      ACDCV:       {label: AC+DC volts, token: 'S0F3'}
+      OHM:         {label: 2-wire kilohms, token: 'S0F4'}
+      OHMF:        {label: 4-wire kilohms, token: 'S0F5'}
+      DCV_RATIO:   {label: DC/DC volts ratio, token: 'S1F1'}
+      ACV_RATIO:   {label: AC/DC volts ratio, token: 'S1F2'}
+      ACDCV_RATIO: {label: AC+DC/DC volts ratio, token: 'S1F3'}
+      OHM_OC:      {label: 2-wire kilohms, offset compensated, token: 'S1F4'}
+      OHMF_OC:     {label: 4-wire kilohms, offset compensated, token: 'S1F5'}
+  range:
+    kind: enum
+    label: Range
+    set: 'R{value}'
+    options:
+      AUTO: {label: Autorange, token: '1'}
+      R2:   {label: 100 mV / 100 ohm, token: '2'}
+      R3:   {label: 1 V / 1 kohm, token: '3'}
+      R4:   {label: 10 V / 10 kohm, token: '4'}
+      R5:   {label: 100 V / 100 kohm, token: '5'}
+      R6:   {label: 1000 V / 1 Mohm, token: '6'}
+      R7:   {label: 10 Mohm (ohms only), token: '7'}
+      R8:   {label: 100 Mohm (ohms only), token: '8'}
+      R9:   {label: 1000 Mohm (ohms only), token: '9'}
+  trigger:
+    kind: enum
+    label: Trigger
+    set: 'T{value}'
+    options:
+      INT:    {label: Internal, token: '1'}
+      EXT:    {label: External, token: '2'}
+      SINGLE: {label: Single, token: '3'}
+      HOLD:   {label: Hold, token: '4'}
+  autozero:
+    kind: bool
+    label: Autozero
+    set: 'Z{value}'
+    values: {'on': '1', 'off': '0'}
+  filter:
+    kind: bool
+    label: AC filter
+    set: 'FL{value}'
+    values: {'on': '1', 'off': '0'}
+  math:
+    kind: enum
+    label: Math
+    set: 'M{value}'
+    options:
+      'OFF':      {label: 'Off', token: '0'}
+      PASS_FAIL:  {label: Pass/fail (limits L, U), token: '1'}
+      STATS:      {label: Statistics, token: '2'}
+      'NULL':     {label: 'Null', token: '3'}
+      THERM_F:    {label: Thermistor (deg F), token: '4'}
+      THERM_C:    {label: Thermistor (deg C), token: '5'}
+      SCALE:      {label: 'Scale (X-Z)/Y', token: '6'}
+      PCT_ERROR:  {label: '% error (X-Y)/Y', token: '7'}
+      DB:         {label: 'dB 20 log(X/Y)', token: '8'}
+  readings:
+    kind: number
+    label: Readings per trigger
+    min: 1
+    max: 9999
+    format: '%d'
+    set: '{value}STN'
+    get: 'REN'
+  digits:
+    kind: number
+    label: Digits displayed
+    min: 3
+    max: 6
+    format: '%d'
+    set: '{value}STG'
+    get: 'REG'
+  nplc:
+    kind: number
+    label: Integration (power-line cycles)
+    min: 0.01
+    max: 100
+    set: '{value}STI'
+    get: 'REI'
+  delay:
+    kind: number
+    label: Settling delay
+    unit: s
+    min: 0
+    max: 1000
+    set: '{value}STD'
+    get: 'RED'
+  math_y:
+    kind: number
+    label: Math register Y
+    set: '{value}STY'
+    get: 'REY'
+  math_z:
+    kind: number
+    label: Math register Z
+    set: '{value}STZ'
+    get: 'REZ'
+  limit_lower:
+    kind: number
+    label: Lower limit (pass/fail)
+    set: '{value}STL'
+    get: 'REL'
+  limit_upper:
+    kind: number
+    label: Upper limit (pass/fail)
+    set: '{value}STU'
+    get: 'REU'
+
+readouts:
+  reading:
+    label: Reading
+    description: Triggered (GET) then read, so each reading is fresh; this puts the meter in remote.
+    read: true
+    trigger: get
+    parse: number
+    poll: 1s
+  terminals:
+    label: Front/rear switch
+    description: SW1, as the meter reports it (1 or 0).
+    query: 'SW1'
+    parse: int
+
+actions:
+  home:
+    label: Home (power-on settings)
+    description: H. Software reset to the power-on settings; the server forgets the settings it was restoring.
+    send: ['H']
+    confirm: true
+    resets: true
+    refresh: true
+
+roles:
+  meter:
+    function: function
+    functions: {dcv: DCV, acv: ACV, acdcv: ACDCV, ohm2: OHM, ohm4: OHMF}
+    reading: reading
+    range: range
+    ranges:
+      dcv:   {R2: 0.1, R3: 1, R4: 10, R5: 100, R6: 1000}
+      acv:   {R2: 0.1, R3: 1, R4: 10, R5: 100, R6: 1000}
+      acdcv: {R2: 0.1, R3: 1, R4: 10, R5: 100, R6: 1000}
+      ohm2:  {R2: 100, R3: 1000, R4: 10000, R5: 100000, R6: 1000000, R7: 10000000, R8: 100000000, R9: 1000000000}
+      ohm4:  {R2: 100, R3: 1000, R4: 10000, R5: 100000, R6: 1000000, R7: 10000000, R8: 100000000, R9: 1000000000}
+    nplc: nplc
+    autozero: autozero
+    reset: home
+
+menu:
+  - Measure: [function, range, trigger, nplc, digits, readings, delay, reading]
+  - Input: [autozero, filter, terminals]
+  - Math: [math, math_y, math_z, limit_lower, limit_upper]
+  - System: [home]
+
+sim:
+  readouts:
+    reading: {value: -4.03402, noise: 0.0001}
+    terminals: {value: 1}

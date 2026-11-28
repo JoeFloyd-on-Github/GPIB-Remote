@@ -192,7 +192,10 @@ class Registry:
         e = []
         if not isinstance(raw, dict):
             return ["instance must be a mapping"]
-        known = {"id", "name", "type", "address", "overrides", "safe_state", "poll_mode", "notes", "revision"}
+        known = {"id", "name", "type", "address", "overrides", "safe_state", "poll_mode", "notes", "revision",
+                 "restore"}
+        if "restore" in raw and not isinstance(raw["restore"], bool):
+            e.append("restore: true or false (remember settings and reapply them when the instrument appears)")
         e += ["%s: unknown key" % k for k in raw if k not in known]
         if not isinstance(raw.get("id"), str) or not INSTANCE_ID.match(raw["id"]):
             e.append("id: lowercase letters, digits, '-' or '_', up to 48 characters")

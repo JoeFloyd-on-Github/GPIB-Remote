@@ -70,7 +70,7 @@ class Backend:
         """Group execute trigger (GET) to one device."""
         raise NotImplementedError
 
-    def serial_poll(self, pad, sad):
+    def serial_poll(self, pad, sad, timeout=3.0):
         """Serial poll; returns the status byte (int)."""
         raise NotImplementedError
 
@@ -81,7 +81,8 @@ class Backend:
         """Run several operations on one device with nothing else in between.
 
         steps: list of ("w", bytes) write, ("q", bytes) write then read, ("r", None) read,
-        ("t", None) group execute trigger. Returns the list of bytes read, in order.
+        ("t", None) group execute trigger, ("p", None) serial poll (result discarded).
+        Returns the list of bytes read, in order.
         """
         out = []
         for i, (kind, data) in enumerate(steps):
@@ -91,6 +92,8 @@ class Backend:
                 self.write(pad, sad, data, timeout)
             if kind == "t":
                 self.trigger(pad, sad)
+            if kind == "p":
+                self.serial_poll(pad, sad, timeout)
             if kind in ("q", "r"):
                 out.append(self.read(pad, sad, max_bytes, timeout))
         return out

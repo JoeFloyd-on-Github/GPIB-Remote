@@ -285,19 +285,20 @@ class Phase1(unittest.TestCase):
         self.assertIn("SENS2:FREQ:STAR 1000000", sim.log)
         self.assertEqual(sim.state[("start", "CH2")], 1e6)
         self.assertEqual(sim.state[("start", "CH1")], 300000)
+        before = self.a.request("dev.get", instance="vna", key="CH2.measurement")["value"]
         r = self.a.request("dev.set", instance="vna", key="CH1.measurement", value="s11")
         self.assertEqual((r["value"], r["source"]), ("S11", "read"))
         self.assertIn('SENS1:FUNC "XFR:S 1,1"', sim.log)
-        self.assertEqual(self.a.request("dev.get", instance="vna", key="CH2.measurement")["value"], "S11")
+        self.assertEqual(self.a.request("dev.get", instance="vna", key="CH2.measurement")["value"], before)
         self.assertAlmostEqual(self.a.request("dev.get", instance="vna", key="CH1.marker_value")["value"], -3.21, places=1)
         self.assertFalse([c for c in sim.log if c.upper().startswith("INST")])
         self.assertCode("rejected", self.a.request, "dev.set", instance="vna", key="CH1.power", value=30)
 
     def test_talk_only_meter(self):
         # The server sends a free-running meter nothing: no probe, no settings, just reads.
-        r = self.a.request("instances.create", instance={"id": "dmm1", "type": "generic.talk-meter@1.0.0", "address": {"pad": 17}})
+        r = self.a.request("instances.create", instance={"id": "dmm1", "type": "generic.talk-meter@1.0.0", "address": {"pad": 1}})
         self.assertAlmostEqual(self.a.request("dev.get", instance="dmm1", key="reading")["value"], -0.15067, places=2)
-        self.assertEqual(self.stack.sim(17).log, [])
+        self.assertEqual(self.stack.sim(1).log, [])
 
     def test_offline_instrument(self):
         r = self.a.request("instances.create", instance={"id": "ghost", "type": "generic.scpi@1.0.0", "address": {"pad": 9}})
@@ -324,7 +325,7 @@ class TypeUnits(unittest.TestCase):
         bad = [({"readout": "nope", "any_bits": 1}, "no such readout"),
                ({"readout": "v_meas", "any_bits": 1}, "parse: int"),
                ({"readout": "status", "any_bits": 0}, "positive integer"),
-               ({"readout": "status"}, "exactly readout and any_bits")]
+               ({"readout": "status"}, "cases: a non-empty list")]
         for inf, msg in bad:
             r = copy.deepcopy(raw)
             r["controls"]["output"]["infer"] = inf

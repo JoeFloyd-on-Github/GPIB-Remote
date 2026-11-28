@@ -60,9 +60,9 @@ class Menu:
         for ent in entries:
             if isinstance(ent, dict):
                 label, children = next(iter(ent.items()))
-                if label == CHANNEL:
+                if CHANNEL in label:    # '{channel}' or e.g. 'Marker {channel}': once per channel
                     for ch, cd in self.model["channels"].items():
-                        out.append((cd.get("label", ch), "menu", (children, ch)))
+                        out.append((label.replace(CHANNEL, cd.get("label", ch)), "menu", (children, ch)))
                 else:
                     out.append((label, "menu", (children, channel)))
                 continue
