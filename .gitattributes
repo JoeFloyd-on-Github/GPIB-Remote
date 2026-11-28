@@ -3,3 +3,4 @@
 *.png binary
 *.tgz binary
 *.whl binary
+*.pdf binary
