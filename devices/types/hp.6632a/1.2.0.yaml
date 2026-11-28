@@ -1,0 +1,108 @@
+schema: 1
+type: hp.6632a
+version: '1.2.0'
+title: HP 6632A System DC Power Supply (20 V / 5 A)
+manufacturer: Hewlett-Packard
+model: 6632A
+verified: false         # queries checked on the bench unit (ROM B01), settings not yet sent
+description: >
+  Pre-SCPI HP-IB power supply. Commands are terse mnemonics (VSET, ISET, OUT); readings come
+  from VOUT?/IOUT?, status from STS?. The settings can't be read back: on the bench unit
+  (ROM? = 'B01 B01') VSET?, ISET?, OUT?, OVSET? and OCP? return nothing and set error 8
+  ("addressed to talk and nothing to say"), so the server reports each setting as the value it
+  last sent ("assumed"), and as unknown until something sets it. Version 1.2.0: settings made
+  write-only; ID?, VOUT?, IOUT?, STS?, ASTS?, ERR? and ROM? checked on the bench unit.
+  Checked on the bench unit (no manual at hand): VSET, ISET, OVSET, OCP 0|1, OUT 0|1, RST, DLY,
+  UNMASK and SRQ are accepted (OUT/OCP take 0 or 1, not ON/OFF). ERR? codes seen: 0 none,
+  8 addressed to talk with nothing to say, 11 unknown command, 41-45 value out of range
+  (OUT/OCP, VSET, ISET, OVSET, DLY). STS? bit 1 (CV) or 2 (+CC) shows the output is on.
+references:
+  - HP 6632A/6633A/6634A Operating Manual, chapter 5 (remote operation)
+
+connection:
+  eos: "\n"             # responses end with CR LF; reads stop at LF
+  write_termination: "\n"
+  timeout: 3s
+
+identify:
+  probe: 'ID?'          # answers e.g. 'HP6632A'; no *IDN? on this generation
+  match: '6632A'
+
+errors:
+  query: 'ERR?'
+  none: '^\s*\+?0\s*$'
+  check_after_set: true
+
+controls:
+  output:
+    kind: bool
+    label: Output
+    set: 'OUT {value}'
+    values: {'on': '1', 'off': '0'}
+  voltage:
+    kind: number
+    label: Voltage
+    unit: V
+    resolution: 0.005
+    min: 0
+    max: 20.475
+    set: 'VSET {value}'
+  current:
+    kind: number
+    label: Current limit
+    unit: A
+    resolution: 0.00125
+    min: 0
+    max: 5.1188
+    set: 'ISET {value}'
+  ovp:
+    kind: number
+    label: Overvoltage trip
+    unit: V
+    min: 0
+    max: 22
+    set: 'OVSET {value}'
+  ocp:
+    kind: bool
+    label: Overcurrent protection
+    set: 'OCP {value}'
+    values: {'on': '1', 'off': '0'}
+
+readouts:
+  v_meas: {label: Measured voltage, unit: V, query: 'VOUT?', poll: 2s}
+  i_meas: {label: Measured current, unit: A, query: 'IOUT?', poll: 2s}
+  status:
+    label: Status register
+    description: 'Bits: 1 CV, 2 +CC, 4 UNR, 8 OV, 16 OT, 64 OC, 128 ERR, 256 INH, 512 -CC, 1024 FAST'
+    query: 'STS?'
+    parse: int
+    poll: 5s
+  firmware: {label: ROM version, query: 'ROM?'}
+
+actions:
+  reset_protection:
+    label: Reset OV/OC protection
+    send: ['RST']
+  clear:
+    label: Device clear (power-on state)
+    send: ['CLR']
+    confirm: true
+    refresh: true
+
+safe_off: ['OUT 0']
+
+roles:
+  supply: {voltage: voltage, current: current, output: output, v_meas: v_meas, i_meas: i_meas, ovp: ovp}
+
+menu:
+  - Output: [output, voltage, current]
+  - Protection: [ovp, ocp, reset_protection]
+  - Readings: [v_meas, i_meas, status, firmware]
+  - System: [clear]
+
+sim:
+  identity: 'HP6632A'
+  readouts:
+    v_meas: {follows: voltage, when: output}
+    i_meas: {value: 0.0}
+    status: {value: 1}
