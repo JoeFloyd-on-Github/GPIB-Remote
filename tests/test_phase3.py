@@ -235,6 +235,8 @@ class Phase3(unittest.TestCase):
         w = self.wsc()
         self.assertEqual(w.status, 101)
         self.assertIn("Sec-WebSocket-Accept: %s" % ws_accept(w.key), w.headers)
+        hello = w.request("hello", client="test", user="wsuser", host="wshost")["result"]
+        self.assertRegex(hello["web_build"], "^[0-9a-f]{16}$")   # pages reload when it changes (a deploy)
         r = w.request("instances.list")
         self.assertTrue(r["ok"])
         self.assertEqual([i["id"] for i in r["result"]["instances"]], ["bench-psu"])

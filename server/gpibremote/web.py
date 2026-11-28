@@ -384,7 +384,24 @@ class WebServer:
             pass
 
 
+def web_build(root):
+    """A fingerprint of the web client's files, so open pages can tell they're out of date."""
+    h = hashlib.sha256()
+    for top, dirs, files in sorted(os.walk(root)):
+        dirs.sort()
+        for name in sorted(files):
+            path = os.path.join(top, name)
+            h.update(os.path.relpath(path, root).replace(os.sep, "/").encode("utf-8") + b"\0")
+            try:
+                with open(path, "rb") as f:
+                    h.update(f.read())
+            except OSError:
+                pass
+    return h.hexdigest()[:16]
+
+
 async def serve_web(dispatcher, host, port, root, hub=None, manager=None, allowed_origins=(),
                     src_root=None, tcp_port=9000):
+    dispatcher.web_build = web_build(root)
     web = WebServer(dispatcher, root, hub, manager, allowed_origins, src_root, tcp_port)
     return await asyncio.start_server(web.on_client, host, port, limit=MAX_HEAD, reuse_address=True)

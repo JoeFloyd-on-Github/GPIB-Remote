@@ -157,7 +157,8 @@ class Dispatcher:
         session.user = str(req.get("user", ""))[:64]
         session.host = str(req.get("host") or session.peer.rsplit(":", 1)[0])[:64]
         return {"server": "gpibremote", "version": __version__, "protocol": PROTOCOL_VERSION,
-                "host": socket.gethostname(), "session": session.id}
+                "host": socket.gethostname(), "session": session.id,
+                "web_build": getattr(self, "web_build", None)}   # changes when the web client's files do
 
     async def op_ping(self, session, req):
         return {"t": time.time()}

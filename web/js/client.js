@@ -32,6 +32,12 @@ export class Client {
       try {
         const r = await this._send("hello", this.hello());
         this.session = r.session;
+        // A server restarted with different web files (a deploy): this page's code is out of
+        // date, so load the new one rather than run old code against the new server.
+        if (r.web_build) {
+          if (this.webBuild && this.webBuild !== r.web_build) { location.reload(); return; }
+          this.webBuild = r.web_build;
+        }
         const resync = [];
         for (const inst of this.subs.keys()) {
           const s = await this._send("subscribe", { instance: inst }).catch(() => null);
