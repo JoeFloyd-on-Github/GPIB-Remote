@@ -203,7 +203,7 @@ the text `OVLD` instead of the number (charts skip it; the Python API's `get_flo
 infinity). Write the exponent with a sign: YAML reads `1.0e38` as text.
 
 `add` sends a second query after the first, in the same bus operation, and adds its number to
-the reading. The 3457A keeps the extra (7.5th) digit of a reading at NPLC 10 or 100 in its HIRES
+the reading, rounded to 10 significant digits so the sum carries no binary noise. The 3457A keeps the extra (7.5th) digit of a reading at NPLC 10 or 100 in its HIRES
 register:
 
 ```yaml

@@ -225,7 +225,7 @@ class Phase4(unittest.TestCase):
             self.assertIn("expected one of", str(cm.exception))                       # not one of the meter's values
             # NPLC 100: the HIRES digit is added, and DCV is specified (3 V range).
             n = len(sim.log)
-            self.assertAlmostEqual(meter.read(), 2.50000003, places=9)
+            self.assertEqual(meter.read(), 2.50000003)          # rounded: no binary noise from the sum
             self.assertEqual(sim.log[n:], ["TRIG SGL", "RMATH HIRES"])
             self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.0017e-2 + 6e-6, places=10)
             # A fixed range uses its own counts; autorange afterwards goes back to the reading's range.
@@ -365,7 +365,7 @@ class Phase4Types(unittest.TestCase):
     def test_new_types_valid(self):
         for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0"),
                      ("hp.8714es", "1.2.0"), ("hp.8714es", "1.3.0"), ("hp.6632a", "1.4.0"),
-                     ("hp.3457a", "1.2.0"), ("hp.3457a", "1.3.0")):
+                     ("hp.3457a", "1.2.0"), ("hp.3457a", "1.3.0"), ("hp.3457a", "1.3.1")):
             self.assertEqual(validate(self.raw(t, v)), [], t)
 
     def bad(self, raw, msg):

@@ -355,7 +355,8 @@ class InstanceRuntime:
                 return self._publish_reading(key, OVERLOAD)
             if add:
                 try:
-                    value += self.t.parse({"parse": "number"}, resps[-1])
+                    # Round away binary noise: 110.2066 + 0.00003 is 110.20663, not ...62999999999.
+                    value = float("%.10g" % (value + self.t.parse({"parse": "number"}, resps[-1])))
                 except ValueError as exc:
                     log.debug("%s: %s: ignoring the added reading: %s", self.id, key, exc)
             return self._publish_reading(key, value)

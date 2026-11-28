@@ -1,8 +1,8 @@
 # HP 3457A multimeter (7.5 digits)
 
-Type `hp.3457a` 1.3.0. Bench instance `dmm3457` at GPIB address 23. Types 1.2.0 and 1.3.0 were
-tried on the meter on 2026-11-28, DC volts only (see Bench results); the other functions are
-untried (`verified: false`).
+Type `hp.3457a` 1.3.1. Bench instance `dmm3457` at GPIB address 23. It was tried on the meter on
+2026-11-28 with DC volts and ohms (see Bench results); the AC functions are untried
+(`verified: false`). 1.3.1 differs from 1.3.0 only in its 30 s timeout.
 
 **1.3.0 reads back:** NPLC, range, autozero, terminals and offset compensation, using their
 queries. The function, autorange and expected AC frequency have no query, so they stay
@@ -145,5 +145,26 @@ to ohms or AC. Afterwards it was returned to autorange, NPLC 10, free-run trigge
 - **Error register:** `ERR?` read 0. The meter was left on autorange, NPLC 10, free-run
   triggering and local.
 
+### Ohms (type 1.3.0, same day; the owner approved switching to ohms)
+
+There was about 110.2 ohms on the front terminals, not an open input as expected. So the test
+current went into whatever is connected there: up to 1 mA, about 0.1 mW, for about 15 seconds.
+
+- **7.5 digits:** ohms reads back with 7.5 digits over HP-IB.
+  - At NPLC 10 the raw `TRIG SGL` answer was ` 110.20300E+00` (6.5 digits), and `RMATH HIRES`
+    answered ` 20.000000E-06`.
+  - At NPLC 100 the reading was 110.20663 ohms. Before 1.3.1 the server printed this as
+    110.20662999999999, binary noise from the sum, which it now rounds away.
+- **4-wire:** 109.75739 ohms on the 300 ohm range, so the sense leads appear to be connected too.
+- **Uncertainty:** +/-0.208 ohm for 2-wire, of which 0.2035 is the 200 mohm lead allowance, and
+  +/-8.4 mohm for 4-wire. Both match the tables.
+- **Timing:** a reading at NPLC 100 took 7.2 s with autozero off. Autozero on (the power-on
+  setting) roughly doubles it, past type 1.3.0's 10 s timeout, so 1.3.1 waits up to 30 s.
+- **Error registers:** `ERR?` and `AUXERR?` read 0. The meter was returned to DC volts,
+  autorange, NPLC 10, free-run triggering and local.
+
 ## Not yet done
+
+- See an overload (1E+38) on the meter. That needs an input beyond the range, which the bench
+  wiring didn't give.
 - AC functions, `ACBAND`, and an overload (1E+38) haven't been seen on the meter yet.

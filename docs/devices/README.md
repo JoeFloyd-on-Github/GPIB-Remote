@@ -9,7 +9,7 @@ file as downloaded.
 |---|---|---|---|---|
 | HP 3455A digital voltmeter | `hp.3455a` 1.0.0 | 1 | Operating and Service Manual (two scans); status bytes decoded on the bench | [hp-3455a](hp-3455a/README.md) |
 | HP 3456A digital voltmeter | `hp.3456a` 1.0.0 | 17 | Quick reference card; Operating and Service Manual (read online); bench | [hp-3456a](hp-3456a/README.md) |
-| HP 3457A multimeter | `hp.3457a` 1.3.0 | 23 | Operating Manual (commands); Service Manual (accuracy specifications, not kept: 37.5 MB); bench (DC volts) | [hp-3457a](hp-3457a/README.md) |
+| HP 3457A multimeter | `hp.3457a` 1.3.1 | 23 | Operating Manual (commands); Service Manual (accuracy specifications, not kept: 37.5 MB); bench (DC volts, ohms) | [hp-3457a](hp-3457a/README.md) |
 | HP 6632A system DC power supply | `hp.6632a` 1.4.0 | 5 | Operating Manual, Sections III to VI; bench | [hp-6632a](hp-6632a/README.md) |
 | HP 8714ES RF network analyzer | `hp.8714es` 1.3.0 | 16 | Programmer's Guide (added later); every command also checked on the analyzer | [hp-8714es](hp-8714es/README.md) |
 
