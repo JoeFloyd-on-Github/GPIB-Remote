@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Run on a PC with internet access. Downloads the packages pinned in deploy/requirements.txt
-into deploy/packages/ for an offline install on the Pi (whose Python has no ssl).
+and deploy/build-requirements.txt into deploy/packages/ for an offline install on the Pi (whose Python has no ssl).
 
 For each `name==version` it takes a pure-Python wheel (py3-none-any) if PyPI has one, otherwise
 the source distribution. Nothing is built here. Then copy the folder to the Pi, e.g.:
@@ -26,8 +26,12 @@ def pick(files):
 def main():
     out = os.path.join(HERE, "packages")
     os.makedirs(out, exist_ok=True)
-    with open(os.path.join(HERE, "requirements.txt")) as fh:
-        reqs = [line.split("#")[0].strip() for line in fh]
+    reqs = []
+    for name in ("build-requirements.txt", "requirements.txt"):
+        path = os.path.join(HERE, name)
+        if os.path.exists(path):
+            with open(path) as fh:
+                reqs += [line.split("#")[0].strip() for line in fh]
     for req in filter(None, reqs):
         m = re.match(r"^([A-Za-z0-9_.\-]+)==([A-Za-z0-9_.\-]+)$", req)
         if not m:

@@ -1,0 +1,142 @@
+# Test, build the Pi installer, install it for real on a runner, and publish it.
+#
+# Every push and pull request: the unit tests, then deploy/build_installer.py builds
+# gpibremote-<version>.run (self-extracting) and .tar.gz, which are installed on an Ubuntu runner
+# under systemd with a simulated bench: enabled at boot, started, web client and CLI download
+# checked, updated in place, uninstalled. The files are kept as the run's "pi-installer" artifact.
+#
+# A tag v<version> (matching server/gpibremote/__init__.py) also publishes them as a GitHub
+# release:   git tag v0.3.0 && git push origin v0.3.0
+
+name: Pi installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.11"]   # the oldest supported, and the Pi's
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install pyyaml
+      - name: Unit tests (simulated bench)
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@localhost
+          python -m unittest discover -s tests -v
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags, for the version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build the installer
+        id: build
+        run: python deploy/build_installer.py --out dist
+      - name: Tag matches the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          [ "${GITHUB_REF_NAME#v}" = "${{ steps.build.outputs.version }}" ] || {
+            echo "::error::tag $GITHUB_REF_NAME doesn't match version ${{ steps.build.outputs.version }} (server/gpibremote/__init__.py)"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pi-installer
+          path: dist/
+          if-no-files-found: error
+
+  install-test:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-installer
+          path: dist
+      - name: Prepare a simulated bench
+        # No adapter here: a simulated board, and no waiting for /dev/gpib0.
+        run: |
+          sudo apt-get install -y -q python3-venv >/dev/null
+          sudo mkdir -p /etc/gpibremote /etc/systemd/system/gpibremote.service.d
+          printf 'boards:\n  - board: 0\n    backend: sim\n' | sudo tee /etc/gpibremote/server.yaml
+          printf '[Service]\nExecStartPre=\n' | sudo tee /etc/systemd/system/gpibremote.service.d/ci.conf
+      - name: Installer self-check
+        run: |
+          RUN=$(ls dist/*.run)
+          sh "$RUN" --version
+          sh "$RUN" --check
+          sh "$RUN" --list | grep -q '/deploy/gpibremote.service$'
+          (cd dist && sha256sum -c SHA256SUMS)
+      - name: Install (defaults; system Python, no setuptools in its venvs)
+        run: sudo PYTHON=/usr/bin/python3 sh dist/*.run
+      - name: Enabled at boot and running
+        run: |
+          [ "$(systemctl is-enabled gpibremote)" = enabled ]
+          [ "$(systemctl is-active gpibremote)" = active ]
+          cat /opt/gpibremote/VERSION
+      - name: Web client, CLI download and the CLI
+        run: |
+          for i in $(seq 20); do curl -fsS -o index.html http://localhost:8080/ && break; sleep 1; done
+          grep -q "Get CLI" index.html
+          curl -fsS -o cli.zip http://localhost:8080/download/gpibctl.zip
+          mkdir cli && cd cli && unzip -q ../cli.zip
+          python3 */cli/gpibctl --host localhost inst create ci-psu agilent.e3631a 5
+          python3 */cli/gpibctl --host localhost ls | tee ls.txt
+          grep -q "^ci-psu " ls.txt
+          python3 */cli/gpibctl --host localhost set ci-psu P6V.voltage 2.5
+      - name: Update in place without restarting
+        run: |
+          before=$(systemctl show -p MainPID --value gpibremote)
+          sudo PYTHON=/usr/bin/python3 sh dist/*.run --no-start
+          [ "$(systemctl show -p MainPID --value gpibremote)" = "$before" ]
+          grep -q "backend: sim" /etc/gpibremote/server.yaml   # configuration kept
+      - name: Uninstall
+        run: |
+          sudo /opt/gpibremote/uninstall.sh --purge
+          if systemctl is-active -q gpibremote; then echo "still running"; exit 1; fi
+          [ ! -e /etc/systemd/system/gpibremote.service ] && [ ! -e /opt/gpibremote/app ]
+      - name: Service log
+        if: failure()
+        run: sudo journalctl -u gpibremote -n 100 --no-pager || true
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, install-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pi-installer
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "GPIB-Remote ${{ needs.build.outputs.version }}" --generate-notes \
+            --notes "Install on the Pi: \`sudo sh gpibremote-${{ needs.build.outputs.version }}.run\` (enables start at boot and starts the service; \`--help\` for options)."

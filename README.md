@@ -27,7 +27,8 @@ Traces from scopes and analyzers (phase 4) come next.
 server/gpibremote/   server: backends/ (linux-gpib via ctypes, simulator), bus worker, protocol, TCP
 cli/gpibctl/         command-line client, and the test-script API (api.py); zipped at /download/gpibctl.zip
 web/                 browser client (plain JavaScript, no build step), served on port 8080
-deploy/              Python build script, offline packages, install script, systemd unit
+deploy/              installer builder, install/uninstall scripts, systemd unit, Python build, offline packages
+.github/workflows/    CI: tests, Pi installer build, install test, releases
 devices/types/       built-in device types (YAML, one folder per type, one file per version)
 scripts/             hardware checks (test_e3631a.py), nickel_plating.py (plating experiment)
 tests/               unittest suite (runs against the simulator)
@@ -109,9 +110,31 @@ cd server && python -m gpibremote --backend sim --data-dir ../data --port 9000  
 
 ## Deploying to the Pi
 
+GitHub Actions (`.github/workflows/installer.yml`) runs the tests on every push, builds the
+installer `gpibremote-<version>.run`, installs it on an Ubuntu runner under systemd with a
+simulated bench (enabled, started, web client and CLI checked, updated, uninstalled) and keeps it
+as the run's `pi-installer` artifact. Pushing a tag `v<version>` (the version in
+`server/gpibremote/__init__.py`) also publishes it as a GitHub release.
+
+The installer holds everything from this repository the Pi needs (server, web client, CLI,
+device types, scripts, docs, the systemd unit, install and uninstall scripts) plus the Python
+packages, so it installs offline. Python 3.9+ and linux-gpib are built on the Pi once
+(docs/pi-setup.md); the installer checks for them.
+
+```
+scp gpibremote-0.3.0.run pi@192.168.1.157:          # from a PC
+sudo sh gpibremote-0.3.0.run                         # on the Pi: install, enable at boot, start
+sudo sh gpibremote-0.3.0.run --no-enable --no-start  # install only
+sh gpibremote-0.3.0.run --help                       # also --extract DIR, --list, --check
+sudo /opt/gpibremote/uninstall.sh                    # remove (keeps data and configuration)
+python deploy/build_installer.py                     # build one locally, into dist/
+```
+
+From a checkout instead:
+
 ```
 git -C ~/GPIB-Remote pull                        # on the Pi
 python deploy/fetch_packages.py                  # on a PC, then copy deploy/packages/ to the Pi
-sudo ~/GPIB-Remote/deploy/install.sh             # on the Pi
+sudo ~/GPIB-Remote/deploy/install.sh             # on the Pi (same options)
 python scripts/save_device_data.py               # on a PC: copy the Pi's types/instances history to GitHub
 ```

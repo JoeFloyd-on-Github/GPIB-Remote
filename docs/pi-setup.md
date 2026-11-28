@@ -62,7 +62,11 @@ Verified after a reboot: `/dev/gpib0` appears, and `pi` (no sudo) can query `*ID
     - Logs, including the audit log: `journalctl -u gpibremote`.
 
 Verified: `*IDN?` from the PC through the service, and again after a reboot with no manual steps.
-To update the server: `git -C ~/GPIB-Remote pull && sudo ~/GPIB-Remote/deploy/install.sh`.
+To update the server: `git -C ~/GPIB-Remote pull && sudo ~/GPIB-Remote/deploy/install.sh`,
+or with the installer CI builds (no checkout or `deploy/packages` needed on the Pi):
+copy `gpibremote-<version>.run` over and `sudo sh gpibremote-<version>.run`. Both enable start at
+boot and restart the service unless given `--no-enable` / `--no-start`. Steps 1-10 (linux-gpib,
+Python) are still done by hand once; the installer checks for them.
 
 The service has no GitHub access (no keys, no remote). Device data in `/var/lib/gpibremote/data`
 is saved to the repo's `device-data` branch from a PC with `scripts/save_device_data.py`.
