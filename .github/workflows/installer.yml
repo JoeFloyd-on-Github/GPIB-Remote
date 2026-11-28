@@ -28,11 +28,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python: ["3.9", "3.11"]   # the oldest supported, and the Pi's
+        python: ["3.11", "3.13"]   # the Pi's, and a newer one
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
       - run: pip install pyyaml
@@ -48,10 +49,10 @@ jobs:
     outputs:
       version: ${{ steps.build.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # tags, for the version
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
       - name: Build the installer
@@ -62,7 +63,7 @@ jobs:
         run: |
           [ "${GITHUB_REF_NAME#v}" = "${{ steps.build.outputs.version }}" ] || {
             echo "::error::tag $GITHUB_REF_NAME doesn't match version ${{ steps.build.outputs.version }} (server/gpibremote/__init__.py)"; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pi-installer
           path: dist/
@@ -72,7 +73,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pi-installer
           path: dist
@@ -129,7 +130,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: pi-installer
           path: dist
