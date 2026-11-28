@@ -136,7 +136,9 @@ controls:
   settings (see *Restoring settings*).
 - **enum:** `options` maps each value to `{label, token, response, match}`; `token` (default: the
   name) goes into `{value}`; a get response is matched against `response` (default: the token)
-  or the `match` regex. Clients send the option name (case-insensitive).
+  or the `match` regex. Clients send the option name (case-insensitive). Numbers match by value:
+  an answer ` 1.0000000E+00` matches `response: 1`, and ` 500.00000E-06` matches the option
+  `'0.0005'`; a client may send `10.0` for the option `'10'`.
 - Instance overrides can narrow `min`/`max` further (`overrides.limits`).
 
 ## Readouts (measurements)
@@ -253,8 +255,9 @@ known, the reading is an overload, or the tables have no figure for the present 
   blank.
 - **Column:** the largest column at or below the control's value (NPLC 10 uses the NPLC 1
   column of an AC table). A table without a column at or below it gives no figure.
-- **Range:** the range control's value while it was set after both the table control and
-  autorange-on, since on most meters choosing a function turns autorange back on. Otherwise
+- **Range:** the range control's value while it was set through the server after both the
+  table control and autorange-on, since on most meters choosing a function turns autorange back
+  on. A range only read back (the one autorange picked) doesn't count. Otherwise
   the range is taken from the reading: the smallest range that holds it. Either way, the
   smallest listed range at or above the value.
 - **Count size:** the range divided by the column's number. On the 3457A, a 6.5-digit count on

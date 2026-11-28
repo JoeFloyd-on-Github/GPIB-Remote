@@ -78,7 +78,7 @@ class InstanceRuntime:
         self.poll_task = None
         self.lock = None
         self.cache = {}            # key -> {"value", "t", "source"}
-        self._order = {}           # key -> update count, so the newer of two entries is known
+        self._order = {}           # control key -> count of the set that last changed it
         self.online = None         # None = not yet contacted
         self.last_error = None
         self._last_error_event = 0.0
@@ -162,6 +162,7 @@ class InstanceRuntime:
                 if d.get("restore", True) is False:
                     continue
                 await self._apply(key, d, ch, self.t.coerce(d, self.saved[key], ch), "server: restore")
+                self._mark_set(key)
                 applied.append(key)
             audit.info("restored %s: %s", self.id, ", ".join("%s=%r" % (k, self.saved[k]) for k in applied))
             self.hub.broadcast({"event": "restored", "instance": self.id, "keys": applied}, instance=self.id)
@@ -289,9 +290,13 @@ class InstanceRuntime:
     def _store(self, key, value, source):
         entry = {"value": value, "t": time.time(), "source": source}
         self.cache[key] = entry
-        self._seq = getattr(self, "_seq", 0) + 1      # which of two entries is newer, at any clock resolution
-        self._order[key] = self._seq
         return entry
+
+    def _mark_set(self, key):
+        """Note that a control was just set (by a client or an action), so which of two settings
+        was changed last is known at any clock resolution. Reading a value back doesn't count."""
+        self._seq = getattr(self, "_seq", 0) + 1
+        self._order[key] = self._seq
 
     # -- operations -----------------------------------------------------------
     async def get(self, key, fresh=True):
@@ -375,8 +380,8 @@ class InstanceRuntime:
         return entry
 
     def _setting(self, cname, ch=None):
-        """A control's state entry (channel-scoped when it is per channel) with its update `order`,
-        or None."""
+        """A control's state entry (channel-scoped when it is per channel) with `order`, the count of
+        the set that last changed it (0 if it was never set), or None."""
         key = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
         e = self.cache.get(key)
         return None if e is None else dict(e, order=self._order.get(key, 0))
@@ -404,6 +409,7 @@ class InstanceRuntime:
         value = self.t.coerce(d, value, ch, self.limits.get(key))
         audit.info("%s set %s %s = %r", session, self.id, key, value)
         entry = await self._apply(key, d, ch, value, str(session.who))
+        self._mark_set(key)
         self._remember(key, d, value)
         return entry
 
@@ -510,6 +516,7 @@ class InstanceRuntime:
             for c in chans:
                 ckey = "%s.%s" % (c, cname) if c else cname
                 self._publish_state(ckey, self.t.coerce(d, v, c), "assumed", by="server: after %s" % name)
+                self._mark_set(ckey)
         if a.get("refresh"):
             await self.refresh()
         return {}

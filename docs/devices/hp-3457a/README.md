@@ -1,7 +1,13 @@
 # HP 3457A multimeter (7.5 digits)
 
-Type `hp.3457a` 1.2.0. Bench instance `dmm3457` at GPIB address 23. It has been offline so far,
-so nothing in the type has been tried on the meter yet (`verified: false`).
+Type `hp.3457a` 1.3.0. Bench instance `dmm3457` at GPIB address 23. Type 1.2.0 was tried on the
+meter on 2026-11-28, DC volts only (see Bench results); the other functions are untried
+(`verified: false`).
+
+**1.3.0 reads back:** NPLC, range, autozero, terminals and offset compensation, using their
+queries. The function, autorange and expected AC frequency have no query, so they stay
+"assumed". The range read back is the one in use, which under autorange is the one it picked.
+The uncertainty only treats a range as fixed when it was set through the server.
 
 ## Sources
 
@@ -48,9 +54,9 @@ so nothing in the type has been tried on the meter yet (`verified: false`).
   - `ACAL ALL/OHMS/AC`: auto-calibration.
 - **Triggering:** `TRIG SGL` takes one reading and returns it, then leaves the meter in
   trigger-hold. `TRIG AUTO` runs freely again.
-- **Queries, not yet used by the type:** `FUNC?`, `NPLC?`, `RANGE?`, `AZERO?`, `OCOMP?` and
-  `TERM?`. The manual documents these query forms; they could replace the assumed values once
-  their answers have been seen on the meter.
+- **Queries:** `NPLC?`, `RANGE?`, `AZERO?`, `TERM?` and `OCOMP?` answer on the bench meter (see
+  Bench results), and type 1.3.0 reads them back. `FUNC?`, `ARANGE?`, `ACBAND?` and `NDIG?` don't
+  answer.
 - **Reset:** `RESET` restores the power-on state. That is DCV, autorange, NPLC 10, ACBAND 20,
   autozero on, front terminals, OCOMP off and the display on; it also sets `END OFF`, so the type
   sends `END ALWAYS` again.
@@ -98,7 +104,36 @@ after the input changes, so the figure can be a little optimistic then.
 against the pattern between tables. For example, the 90-day ACV figures are the 24-hour ones
 plus 0.06%, which confirms 0.56 for 20-45 Hz. The OCR's "0.2.1" is 0.25 and ".9.1" is 0.95.
 
+## Bench results (2026-11-28, type 1.2.0, DC volts only)
+
+The test used the front terminals, with about -2.5 uV at the input. The meter was never switched
+to ohms or AC. Afterwards it was returned to autorange, NPLC 10, free-run triggering and local.
+
+- **Identity:** `ID?` answers `HP3457A` in 0.05 s.
+- **Queries that answer:** each in about 0.4 s, as a number.
+  - `NPLC?` answers ` 10.000000E+00`.
+  - `RANGE?` answers ` 30.000000E-03`. It shows the range autorange picked, but only after the
+    next reading.
+  - `AZERO?` answers 0 or 1. The bench meter had autozero off.
+  - `TERM?` answers 1 (front).
+  - `OCOMP?` answers 0 or 1.
+- **Queries that don't answer:** `FUNC?`, `ARANGE?`, `ACBAND?` and `NDIG?` aren't valid. The read
+  times out, and `ERR?` then reports 16.
+- **Readings and timing:** `TRIG SGL` readings take about 0.4 s at NPLC 10, 0.2 s at NPLC 1 and
+  5.3 s at NPLC 100 (autozero off). The 10 s timeout covers that.
+- **HIRES:** `RMATH HIRES` answered ` 4.0000000E-09` after a reading at NPLC 10. At NPLC 100 the
+  reading came back with 7.5 digits (-2.7323499999E-06 V).
+- **Uncertainty:** each figure matched the tables:
+
+  | Settings | Range | Counts | Uncertainty |
+  |---|---|---|---|
+  | Autorange, NPLC 10 | 30 mV | 385 x 10 nV | 3.85 uV |
+  | Autorange, NPLC 1 | 30 mV | 500 x 10 nV | 5.0 uV |
+  | Autorange, NPLC 0.1 | 30 mV | 70 x 100 nV | 7.0 uV |
+  | Fixed range set to 3, NPLC 10 | 3 V | 7 x 1 uV | 7.0 uV |
+- **Error register:** `ERR?` read 0 after the test.
+
 ## Not yet done
 
-- Try the type on the meter: settings, `TRIG SGL` timing at NPLC 100, HIRES, `ACBAND`, and the
-  query forms.
+- Try type 1.3.0's readbacks on the meter.
+- AC functions, `ACBAND`, and an overload (1E+38) haven't been seen on the meter yet.

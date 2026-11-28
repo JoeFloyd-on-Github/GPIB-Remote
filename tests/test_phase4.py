@@ -268,6 +268,38 @@ class Phase4(unittest.TestCase):
             bench.close()
 
 
+    def test_3457a_1_3_readbacks(self):
+        bench = Bench("127.0.0.1", self.stack.port, user="tester")
+        try:
+            dev = bench.add("dmm", "hp.3457a@1.3.0", 22)
+            sim = self.stack.sim(22)
+            sim.sim_readouts["reading"] = {"value": 2.5}
+            meter = bench.meter("dmm")
+            meter.configure("dcv", range=300, nplc=10)
+            for key in ("range", "nplc"):
+                self.assertEqual(dev.get_entry(key, fresh=False)["source"], "read")
+            self.assertIn("NPLC?", sim.log)
+            meter.read()
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.005e-2 + 7e-4, places=10)
+            # Autorange on, then the range read back (a refresh): a range that was only read
+            # doesn't count as a fixed one, so the reading's own range (3 V) is used.
+            dev.set("autorange", "on")
+            dev.get("range")
+            meter.read()
+            self.assertAlmostEqual(dev.get("uncertainty", fresh=False), 2.5 * 0.0017e-2 + 7e-6, places=10)
+        finally:
+            bench.close()
+
+    def test_numeric_enum_answers(self):
+        from gpibremote.devicetypes import DeviceType
+        t = DeviceType(_read(os.path.join(BUILTIN, "hp.3457a", "1.3.0.yaml")))
+        c = t.controls
+        self.assertEqual(t.parse(c["nplc"], " 500.00000E-06"), "0.0005")
+        self.assertEqual(t.parse(c["autozero"], " 1.0000000E+00"), "ON")
+        self.assertEqual(t.parse(c["terminals"], " 2.0000000E+00"), "REAR")
+        self.assertIs(t.parse(c["offset_comp"], " 0.0000000E+00"), False)
+
+
 class Supply6632A(unittest.TestCase):
     """hp.6632a 1.4.0: status register decoded bit by bit (manual Table 6-4)."""
 
@@ -333,7 +365,7 @@ class Phase4Types(unittest.TestCase):
     def test_new_types_valid(self):
         for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0"),
                      ("hp.8714es", "1.2.0"), ("hp.8714es", "1.3.0"), ("hp.6632a", "1.4.0"),
-                     ("hp.3457a", "1.2.0")):
+                     ("hp.3457a", "1.2.0"), ("hp.3457a", "1.3.0")):
             self.assertEqual(validate(self.raw(t, v)), [], t)
 
     def bad(self, raw, msg):

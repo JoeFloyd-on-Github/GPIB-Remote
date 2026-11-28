@@ -288,10 +288,10 @@ class DeviceType:
 
         def fit(x):
             return next((r for r in ranges if abs(x) <= r * over * (1 + 1e-9)), None)
-        def when(e):    # update order from the runtime, else the time
-            return e.get("order", e.get("t")) or 0
-        fixed = entry("range")
-        if fixed and _number(fixed.get("value")) is not None:
+        def when(e):    # the order of the set that last changed it (0: never set)
+            return e.get("order", 0)
+        fixed = entry("range")      # only a range set through the server; one read back may be autorange's
+        if fixed and when(fixed) and _number(fixed.get("value")) is not None:
             later = []      # a function change or autorange on since then undoes a fixed range
             for k in ("table", "autorange"):
                 e = entry(k)
@@ -401,6 +401,15 @@ class DeviceType:
                     return name
                 if text.upper() == str(opt.get("response", opt.get("token", name))).upper():
                     return name
+            for name, opt in (d.get("options") or {}).items():     # the option's own name or token
+                if text.upper() in (str(name).upper(), str((opt or {}).get("token", name)).upper()):
+                    return name
+            v = _number(text) if _FLOAT.fullmatch(text) else None
+            if v is not None:   # a number ('1.0000000E+00' for option '1' or response 1)
+                for name, opt in (d.get("options") or {}).items():
+                    n = _number((opt or {}).get("response", (opt or {}).get("token", name)))
+                    if n is not None and abs(n - v) <= 1e-9 * max(abs(n), abs(v)):
+                        return name
             raise ValueError("unknown enum response %r" % text)
         return text
 
