@@ -1,8 +1,8 @@
 # HP 3457A multimeter (7.5 digits)
 
-Type `hp.3457a` 1.3.0. Bench instance `dmm3457` at GPIB address 23. Type 1.2.0 was tried on the
-meter on 2026-11-28, DC volts only (see Bench results); the other functions are untried
-(`verified: false`).
+Type `hp.3457a` 1.3.0. Bench instance `dmm3457` at GPIB address 23. Types 1.2.0 and 1.3.0 were
+tried on the meter on 2026-11-28, DC volts only (see Bench results); the other functions are
+untried (`verified: false`).
 
 **1.3.0 reads back:** NPLC, range, autozero, terminals and offset compensation, using their
 queries. The function, autorange and expected AC frequency have no query, so they stay
@@ -133,7 +133,17 @@ to ohms or AC. Afterwards it was returned to autorange, NPLC 10, free-run trigge
   | Fixed range set to 3, NPLC 10 | 3 V | 7 x 1 uV | 7.0 uV |
 - **Error register:** `ERR?` read 0 after the test.
 
-## Not yet done
+### Type 1.3.0 (same day, DC volts only)
 
-- Try type 1.3.0's readbacks on the meter.
+- **Readbacks on first contact:** NPLC 10, range 0.03, autozero OFF, terminals FRONT and offset
+  compensation off. All were marked "read", and they match how the meter had been left.
+- **Readbacks after setting:** setting NPLC 1, 0.1 and 10 read back as set. Setting range 2 read
+  back as 3, the range the meter uses for it.
+- **Uncertainty:** after the fixed range, autorange was turned on and the range read back as
+  0.03. The uncertainty used the reading's own range (30 mV, 3.85 uV at NPLC 10), not the 3 V
+  set earlier.
+- **Error register:** `ERR?` read 0. The meter was left on autorange, NPLC 10, free-run
+  triggering and local.
+
+## Not yet done
 - AC functions, `ACBAND`, and an overload (1E+38) haven't been seen on the meter yet.
