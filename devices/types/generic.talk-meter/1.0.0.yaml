@@ -1,0 +1,35 @@
+schema: 1
+type: generic.talk-meter
+version: '1.0.0'
+title: Free-running meter (listen only)
+verified: false
+description: >
+  Any meter that sends its present reading whenever it is addressed to talk, such as an
+  HP 3455A or 3456A running on internal trigger. The server sends the meter nothing at all: no
+  identity probe, no settings, no triggers. Settings stay on the front panel, and the reading is
+  in whatever function and range the meter shows. Safe to use until a type for the exact model
+  exists.
+
+connection:
+  eos: "\n"
+  timeout: 5s           # a slow integration time can take a second or more per reading
+
+identify:
+  probe: null
+
+readouts:
+  reading:
+    label: Reading
+    read: true          # address to talk and take what the meter sends
+    parse: number
+    poll: 1s
+
+roles:
+  meter: {reading: reading}
+
+menu:
+  - Measure: [reading]
+
+sim:
+  readouts:
+    reading: {value: -0.15067, noise: 0.0005}

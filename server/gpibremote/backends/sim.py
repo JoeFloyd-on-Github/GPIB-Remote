@@ -133,6 +133,9 @@ class TypeSimInstrument:
         if "follows" in spec:
             on = self.state.get((spec["when"], None), True) if spec.get("when") else True
             value = self.state.get((spec["follows"], ch), 0.0) if on else 0.0
+        elif "value_on" in spec and spec.get("when"):   # e.g. a status register while output is on
+            on = self.state.get((spec["when"], None), False)
+            value = spec["value_on"] if on else spec.get("value", 0.0)
         else:
             value = spec.get("value", 0.0)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -152,7 +155,7 @@ class TypeSimInstrument:
         for name, d in t.readouts.items():
             for ch in (list(t.channels) if d.get("per_channel") else [None]):
                 q = d.get("query")
-                if q and cmd.upper() == q.format(channel=ch).upper() and (
+                if q and cmd.upper() == t.render(q, ch).upper() and (
                         "{channel" in q or ch is None or ch == self.channel):
                     return self._readout(name, ch)
         for name, d in t.controls.items():
@@ -160,7 +163,7 @@ class TypeSimInstrument:
             if not g:
                 continue
             for ch in (list(t.channels) if d.get("per_channel") else [None]):
-                if cmd.upper() == g.format(channel=ch).upper() and (
+                if cmd.upper() == t.render(g, ch).upper() and (
                         "{channel" in g or ch is None or ch == self.channel):
                     return self._respond(d, self.state[(name, ch)])
         return None
@@ -192,7 +195,14 @@ class TypeSimInstrument:
             m = rx.match(cmd)
             if not m:
                 continue
-            ch = m.groupdict().get("channel") or (self.channel if d.get("per_channel") else None)
+            ch = m.groupdict().get("channel")
+            if ch is not None:    # a channel name, or a channel attribute such as {channel.n}
+                ch = next((c for c, a in self.t.channels.items() if c.upper() == ch.upper()
+                           or ch in (str(v) for v in (a or {}).values())), None)
+                if ch is None:
+                    continue
+            elif d.get("per_channel"):
+                ch = self.channel
             token = m.group("value").strip() if "value" in m.groupdict() else ""
             kind = d.get("kind")
             try:
@@ -213,7 +223,11 @@ class TypeSimInstrument:
         return False
 
     def take_output(self):
-        return self.outq.pop(0) if self.outq else None
+        if self.outq:
+            return self.outq.pop(0)
+        # A free-running meter: addressed to talk with nothing asked, it sends its present reading.
+        talk = next((n for n, d in self.t.readouts.items() if d.get("read") and not d.get("query")), None)
+        return self._readout(talk, None) if talk else None
 
 
 class SimBackend(Backend):

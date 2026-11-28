@@ -27,8 +27,8 @@ def value(v, item=None, source=None):
         opt = (item.get("options") or {}).get(v) if item.get("kind") == "enum" else None
         if opt and opt.get("label"):
             text += " (%s)" % opt["label"]
-    if source == "assumed":
-        text += "  [assumed]"
+    if source in ("assumed", "inferred"):
+        text += "  [%s]" % source
     return text
 
 

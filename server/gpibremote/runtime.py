@@ -186,6 +186,10 @@ class InstanceRuntime:
     async def get(self, key, fresh=True):
         section, name, ch, d = self.t.item(key)
         template = d.get("get") if section == "controls" else d.get("query")
+        if section == "controls" and d.get("infer") and fresh:
+            # Can't be asked; read the status readout it is judged from (which publishes it).
+            await self.get(self._infer_source(name, ch))
+            return self.cache.get(key) or {"value": None, "t": None, "source": "unknown"}
         if section == "readouts" and not template:      # talk-only readout
             steps = ([("t", None)] if d.get("trigger") == "get" else []) + [("r", None)]
             resp = (await self._transact(steps))[-1]
@@ -213,7 +217,17 @@ class InstanceRuntime:
         entry = self._store(key, value, "read")
         self.hub.broadcast({"event": "reading", "instance": self.id, "key": key,
                             "value": value, "t": entry["t"]}, instance=self.id)
+        ch, rname = self.t.split_key(key)
+        for cname in self.t.inferred_by.get(rname, ()):
+            if isinstance(value, int) and not isinstance(value, bool):
+                on = bool(value & self.t.controls[cname]["infer"]["any_bits"])
+                ckey = "%s.%s" % (ch, cname) if ch else cname
+                self._publish_state(ckey, on, "inferred", by="server: from %s" % key)
         return entry
+
+    def _infer_source(self, cname, ch):
+        rname = self.t.controls[cname]["infer"]["readout"]
+        return "%s.%s" % (ch, rname) if ch else rname
 
     def _publish_state(self, key, value, source, by=None):
         old = self.cache.get(key)
@@ -276,11 +290,11 @@ class InstanceRuntime:
         return {}
 
     async def refresh(self):
-        """Read back every control that has a query."""
+        """Read back every control that has a query, or is inferred from a readout."""
         out = {}
         for key in self.t.keys("controls"):
             d = self.t.item(key)[3]
-            if d.get("get"):
+            if d.get("get") or d.get("infer"):
                 out[key] = await self.get(key)
         return out
 

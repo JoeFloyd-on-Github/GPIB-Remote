@@ -70,7 +70,7 @@ used by convention if its keys have the usual names.
 | `summary()` | Live status: address, online, lock. |
 | `keys()`, `actions()`, `describe()` | What it offers; `describe()` is a readable list with units and ranges. |
 | `get(key, fresh=True)`, `get_float(key)` | A value; a readout takes a new measurement. |
-| `get_entry(key, fresh=True)` | `{value, t, source}`: `source` is `read`, `assumed` (last value set; the instrument can't report it) or `unknown`. |
+| `get_entry(key, fresh=True)` | `{value, t, source}`: `source` is `read`, `inferred` (judged from a status reading), `assumed` (last value set; the instrument can't report it) or `unknown`. |
 | `set(key, value)`, `set_entry(key, value)` | Set a control; returns the value read back (or the entry). Out-of-range values raise `ServerError` with code `rejected`. |
 | `configure(**settings)` | Several `set`s in order. |
 | `action(name, channel=None)` | Run an action (`reset`, `autocal_ohms`, ...). |

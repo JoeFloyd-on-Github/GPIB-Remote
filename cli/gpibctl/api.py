@@ -450,8 +450,9 @@ class Device:
         return self.get_entry(key, fresh)["value"]
 
     def get_entry(self, key, fresh=True):
-        """{value, t, source}: source is 'read' (from the instrument), 'assumed' (the last value
-        set; the instrument can't report it) or 'unknown'; t is the time (Unix seconds)."""
+        """{value, t, source}: source is 'read' (from the instrument), 'inferred' (judged from a
+        status reading; the instrument can't report it directly), 'assumed' (the last value set;
+        the instrument can't report it) or 'unknown'; t is the time (Unix seconds)."""
         return self.bench.request("dev.get", instance=self.id, key=key, fresh=fresh)
 
     def get_float(self, key, fresh=True):

@@ -1,0 +1,264 @@
+schema: 1
+type: hp.8714es
+version: '1.0.0'
+title: HP 8714ES RF Network Analyzer
+manufacturer: Hewlett-Packard
+model: 8714ES
+verified: false         # every get was queried on the bench unit (firmware E.06.02); sets not yet tried
+description: >
+  300 kHz - 3 GHz S-parameter network analyzer with two measurement channels. Settings are read
+  back from the analyzer. Traces (whole sweeps) come with phase 4; for now a marker gives the
+  value at one frequency.
+references:
+  - HP 8712ES/8714ES Programmer's Guide (SCPI command reference)
+
+connection:
+  eos: "\n"
+  write_termination: "\n"
+  timeout: 5s
+
+identify:
+  probe: '*IDN?'        # HEWLETT-PACKARD,8714ES,US39230371,E.06.02
+  match: '^HEWLETT-PACKARD,8714ES,'
+
+errors:
+  query: 'SYST:ERR?'
+  none: '^\+?0,'
+  check_after_set: true
+
+# Every command names its channel (SENS{channel.n} -> SENS1, SENS2), so there is no
+# channel-select command and the front-panel active channel is left alone.
+channels:
+  list:
+    CH1: {label: 'Channel 1', n: 1}
+    CH2: {label: 'Channel 2', n: 2}
+
+controls:
+  rf_output:
+    kind: bool
+    label: RF output
+    description: Source power on or off at the ports.
+    set: 'OUTP {value}'
+    get: 'OUTP?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  continuous:
+    kind: bool
+    label: Continuous sweep
+    description: Off holds the display; a single sweep then runs only on request.
+    set: 'INIT1:CONT {value}'
+    get: 'INIT1:CONT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  enabled:
+    kind: bool
+    per_channel: true
+    label: Channel on
+    set: 'SENS{channel.n}:STAT {value}'
+    get: 'SENS{channel.n}:STAT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  measurement:
+    kind: enum
+    per_channel: true
+    label: Measurement
+    set: 'SENS{channel.n}:FUNC {value}'
+    get: 'SENS{channel.n}:FUNC?'
+    options:
+      S11: {label: 'S11 (reflection, port 1)', token: '"XFR:S 1,1"'}
+      S21: {label: 'S21 (transmission, 1 to 2)', token: '"XFR:S 2,1"'}
+      S12: {label: 'S12 (transmission, 2 to 1)', token: '"XFR:S 1,2"'}
+      S22: {label: 'S22 (reflection, port 2)', token: '"XFR:S 2,2"'}
+  format:
+    kind: enum
+    per_channel: true
+    label: Format
+    set: 'CALC{channel.n}:FORM {value}'
+    get: 'CALC{channel.n}:FORM?'
+    options:
+      MLOG: {label: Log magnitude (dB)}
+      MLIN: {label: Linear magnitude}
+      PHAS: {label: Phase}
+      GDEL: {label: Group delay}
+      SWR:  {label: SWR}
+      SMIT: {label: Smith chart}
+      POL:  {label: Polar}
+      REAL: {label: Real}
+      IMAG: {label: Imaginary}
+  start:
+    kind: number
+    per_channel: true
+    label: Start frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:STAR {value}'
+    get: 'SENS{channel.n}:FREQ:STAR?'
+  stop:
+    kind: number
+    per_channel: true
+    label: Stop frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:STOP {value}'
+    get: 'SENS{channel.n}:FREQ:STOP?'
+  center:
+    kind: number
+    per_channel: true
+    label: Center frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:CENT {value}'
+    get: 'SENS{channel.n}:FREQ:CENT?'
+  span:
+    kind: number
+    per_channel: true
+    label: Span
+    unit: Hz
+    resolution: 1
+    min: 0
+    max: 2999700000
+    set: 'SENS{channel.n}:FREQ:SPAN {value}'
+    get: 'SENS{channel.n}:FREQ:SPAN?'
+  power:
+    kind: number
+    per_channel: true
+    label: Source power
+    unit: dBm
+    resolution: 0.1
+    min: -60
+    max: 16
+    set: 'SOUR{channel.n}:POW {value}'
+    get: 'SOUR{channel.n}:POW?'
+  points:
+    kind: number
+    per_channel: true
+    label: Points per sweep
+    description: 3, 5, 11, 21, 51, 101, 201, 401, 801 or 1601.
+    min: 3
+    max: 1601
+    format: '%d'
+    set: 'SENS{channel.n}:SWE:POIN {value}'
+    get: 'SENS{channel.n}:SWE:POIN?'
+  if_bandwidth:
+    kind: number
+    per_channel: true
+    label: IF bandwidth
+    unit: Hz
+    min: 10
+    max: 6500
+    set: 'SENS{channel.n}:BWID {value}'
+    get: 'SENS{channel.n}:BWID?'
+  averaging:
+    kind: bool
+    per_channel: true
+    label: Averaging
+    set: 'SENS{channel.n}:AVER {value}'
+    get: 'SENS{channel.n}:AVER?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  average_count:
+    kind: number
+    per_channel: true
+    label: Averaging factor
+    min: 1
+    max: 64
+    format: '%d'
+    set: 'SENS{channel.n}:AVER:COUN {value}'
+    get: 'SENS{channel.n}:AVER:COUN?'
+  correction:
+    kind: bool
+    per_channel: true
+    label: Calibration correction
+    set: 'SENS{channel.n}:CORR:STAT {value}'
+    get: 'SENS{channel.n}:CORR:STAT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  scale:
+    kind: number
+    per_channel: true
+    label: Scale per division
+    set: 'DISP:WIND{channel.n}:TRAC:Y:PDIV {value}'
+    get: 'DISP:WIND{channel.n}:TRAC:Y:PDIV?'
+  ref_level:
+    kind: number
+    per_channel: true
+    label: Reference level
+    set: 'DISP:WIND{channel.n}:TRAC:Y:RLEV {value}'
+    get: 'DISP:WIND{channel.n}:TRAC:Y:RLEV?'
+  marker:
+    kind: bool
+    per_channel: true
+    label: Marker 1
+    set: 'CALC{channel.n}:MARK1 {value}'
+    get: 'CALC{channel.n}:MARK1?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  marker_freq:
+    kind: number
+    per_channel: true
+    label: Marker 1 frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'CALC{channel.n}:MARK1:X {value}'
+    get: 'CALC{channel.n}:MARK1:X?'
+
+readouts:
+  marker_value:
+    per_channel: true
+    label: Marker 1 value
+    description: In the channel's format (dB for log magnitude, degrees for phase, ...).
+    query: 'CALC{channel.n}:MARK1:Y?'
+    poll: 2s
+  sweep_time:
+    per_channel: true
+    label: Sweep time
+    unit: s
+    query: 'SENS{channel.n}:SWE:TIME?'
+
+actions:
+  single_sweep:
+    label: Single sweep
+    description: Starts one sweep (turn continuous sweep off first to hold the result).
+    send: ['ABOR', 'INIT1']
+  autoscale:
+    per_channel: true
+    label: Autoscale
+    send: ['DISP:WIND{channel.n}:TRAC:Y:AUTO ONCE']
+    refresh: true
+  marker_to_max:
+    per_channel: true
+    label: Marker to maximum
+    send: ['CALC{channel.n}:MARK1:MAX']
+    refresh: true
+  marker_to_min:
+    per_channel: true
+    label: Marker to minimum
+    send: ['CALC{channel.n}:MARK1:MIN']
+    refresh: true
+  preset:
+    label: Preset
+    description: SYST:PRES. Every setting to its preset value; calibrations are kept in memory.
+    send: ['SYST:PRES']
+    confirm: true
+    refresh: true
+  clear_status:
+    label: Clear status and errors
+    send: ['*CLS']
+
+safe_off: ['OUTP OFF']
+
+menu:
+  - Sweep: [continuous, single_sweep, rf_output]
+  - '{channel}': [enabled, measurement, format, start, stop, center, span, power, points,
+                          if_bandwidth, averaging, average_count, correction, scale, ref_level,
+                          autoscale, sweep_time]
+  - 'Marker {channel}': [marker, marker_freq, marker_value, marker_to_max, marker_to_min]
+  - System: [preset, clear_status]
+
+sim:
+  identity: 'HEWLETT-PACKARD,8714ES,US39230371,E.06.02'
+  readouts:
+    marker_value: {value: -3.21, noise: 0.01}
+    sweep_time: {value: 2.316}

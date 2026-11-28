@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import copy
 import os
 import shutil
 import subprocess
@@ -13,12 +14,14 @@ import threading
 import time
 import unittest
 
+import yaml
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path[:0] = [os.path.join(ROOT, "server"), os.path.join(ROOT, "cli")]
 
 from gpibremote import config                                     # noqa: E402
 from gpibremote.__main__ import make_bus                          # noqa: E402
-from gpibremote.devicetypes import DeviceType                     # noqa: E402
+from gpibremote.devicetypes import DeviceType, validate           # noqa: E402
 from gpibremote.protocol import Dispatcher                        # noqa: E402
 from gpibremote.registry import Registry                          # noqa: E402
 from gpibremote.runtime import Hub, Manager                       # noqa: E402
@@ -237,13 +240,32 @@ class Phase1(unittest.TestCase):
         self.assertFalse(self.stack.sim(5).state[("output", None)])
 
     def test_pre_scpi_types(self):
-        self.a.request("instances.create", instance={"id": "psu2", "type": "hp.6632a@1.0.0", "address": {"pad": 6}})
+        # 1.2.0+: the 6632A can't report its settings (checked on the bench unit), so a set is
+        # reported as the value sent ("assumed"), and nothing is read back.
+        self.a.request("instances.create", instance={"id": "psu2", "type": "hp.6632a@1.3.0", "address": {"pad": 6}})
+        self.assertEqual(self.a.request("dev.get", instance="psu2", key="voltage")["source"], "unknown")
         r = self.a.request("dev.set", instance="psu2", key="voltage", value=12.5)
-        self.assertEqual((r["value"], r["source"]), (12.5, "read"))
+        self.assertEqual((r["value"], r["source"]), (12.5, "assumed"))
         self.assertIn("VSET 12.5", self.stack.sim(6).log)
-        self.a.request("dev.set", instance="psu2", key="output", value=True)
+        self.assertFalse([c for c in self.stack.sim(6).log if c.startswith("VSET?")])
+        # The output can't be asked either, but STS? shows CV/CC only while it is on.
+        r = self.a.request("dev.get", instance="psu2", key="output")
+        self.assertEqual((r["value"], r["source"]), (False, "inferred"))
+        r = self.a.request("dev.set", instance="psu2", key="output", value=True)
+        self.assertEqual((r["value"], r["source"]), (True, "assumed"))
         self.assertIn("OUT 1", self.stack.sim(6).log)
+        r = self.a.request("dev.get", instance="psu2", key="output")
+        self.assertEqual((r["value"], r["source"]), (True, "inferred"))
         self.assertAlmostEqual(self.a.request("dev.get", instance="psu2", key="v_meas")["value"], 12.5)
+        # Every status reading updates it (polled readings included), e.g. after a front-panel change.
+        self.stack.sim(6).state[("output", None)] = False
+        self.assertEqual(self.a.request("dev.get", instance="psu2", key="status")["value"], 1024)
+        r = self.a.request("dev.get", instance="psu2", key="output", fresh=False)
+        self.assertEqual((r["value"], r["source"]), (False, "inferred"))
+        self.stack.sim(6).state[("output", None)] = True
+        refreshed = self.a.request("dev.refresh", instance="psu2")["state"]
+        self.assertEqual((refreshed["output"]["value"], refreshed["output"]["source"]), (True, "inferred"))
+        self.assertEqual(refreshed["voltage"]["source"], "assumed")
         r = self.a.request("instances.create", instance={"id": "dmm", "type": "hp.3457a@1.0.0", "address": {"pad": 22}})
         self.assertTrue(r["identify"]["match"])
         r = self.a.request("dev.set", instance="dmm", key="function", value="ohmf")
@@ -251,6 +273,30 @@ class Phase1(unittest.TestCase):
         self.assertEqual(self.stack.sim(22).log[:2], ["END ALWAYS", "ID?"])
         self.assertAlmostEqual(self.a.request("dev.get", instance="dmm", key="reading")["value"], 1.2345678, places=4)
         self.assertCode("rejected", self.a.request, "dev.set", instance="dmm", key="function", value="VOLTS")
+
+    def test_network_analyzer_channels(self):
+        # Commands name the channel through a channel attribute (SENS{channel.n} -> SENS2), so no
+        # select command is sent and each channel keeps its own settings.
+        self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.0.0", "address": {"pad": 16}})
+        sim = self.stack.sim(16)
+        r = self.a.request("dev.set", instance="vna", key="CH2.start", value=1e6)
+        self.assertEqual((r["value"], r["source"]), (1e6, "read"))
+        self.assertIn("SENS2:FREQ:STAR 1000000", sim.log)
+        self.assertEqual(sim.state[("start", "CH2")], 1e6)
+        self.assertEqual(sim.state[("start", "CH1")], 300000)
+        r = self.a.request("dev.set", instance="vna", key="CH1.measurement", value="s11")
+        self.assertEqual((r["value"], r["source"]), ("S11", "read"))
+        self.assertIn('SENS1:FUNC "XFR:S 1,1"', sim.log)
+        self.assertEqual(self.a.request("dev.get", instance="vna", key="CH2.measurement")["value"], "S11")
+        self.assertAlmostEqual(self.a.request("dev.get", instance="vna", key="CH1.marker_value")["value"], -3.21, places=1)
+        self.assertFalse([c for c in sim.log if c.upper().startswith("INST")])
+        self.assertCode("rejected", self.a.request, "dev.set", instance="vna", key="CH1.power", value=30)
+
+    def test_talk_only_meter(self):
+        # The server sends a free-running meter nothing: no probe, no settings, just reads.
+        r = self.a.request("instances.create", instance={"id": "dmm1", "type": "generic.talk-meter@1.0.0", "address": {"pad": 17}})
+        self.assertAlmostEqual(self.a.request("dev.get", instance="dmm1", key="reading")["value"], -0.15067, places=2)
+        self.assertEqual(self.stack.sim(17).log, [])
 
     def test_offline_instrument(self):
         r = self.a.request("instances.create", instance={"id": "ghost", "type": "generic.scpi@1.0.0", "address": {"pad": 9}})
@@ -268,6 +314,38 @@ class TypeUnits(unittest.TestCase):
         t = DeviceType(_read(os.path.join(BUILTIN, "hp.3457a", "1.0.0.yaml")))
         self.assertEqual(t.format_value(t.controls["autozero"], "ONCE"), "ONCE")
         self.assertEqual(t.coerce(t.controls["autozero"], "once"), "ONCE")
+
+    def test_infer_validation(self):
+        raw = yaml.safe_load(_read(os.path.join(BUILTIN, "hp.6632a", "1.3.0.yaml")))
+        self.assertEqual(validate(raw), [])
+        self.assertEqual(DeviceType(_read(os.path.join(BUILTIN, "hp.6632a", "1.3.0.yaml"))).inferred_by,
+                         {"status": ["output"]})
+        bad = [({"readout": "nope", "any_bits": 1}, "no such readout"),
+               ({"readout": "v_meas", "any_bits": 1}, "parse: int"),
+               ({"readout": "status", "any_bits": 0}, "positive integer"),
+               ({"readout": "status"}, "exactly readout and any_bits")]
+        for inf, msg in bad:
+            r = copy.deepcopy(raw)
+            r["controls"]["output"]["infer"] = inf
+            self.assertTrue([x for x in validate(r) if msg in x], (inf, validate(r)))
+        r = copy.deepcopy(raw)
+        r["controls"]["voltage"]["infer"] = {"readout": "status", "any_bits": 1}
+        self.assertTrue([x for x in validate(r) if "only for kind bool" in x])
+
+    def test_channel_select_rules(self):
+        raw = yaml.safe_load(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.0.yaml")))
+        self.assertEqual(validate(raw), [])
+        dt = DeviceType(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.0.yaml")))
+        self.assertEqual(dt.render(dt.controls["start"]["set"], "CH2", "5e6"), "SENS2:FREQ:STAR 5e6")
+        r = copy.deepcopy(raw)       # a per-channel command without the channel needs a select command
+        r["controls"]["power"]["set"] = "SOUR:POW {value}"
+        self.assertTrue([x for x in validate(r) if "channels.select: required" in x], validate(r))
+        r = copy.deepcopy(raw)
+        del r["channels"]["list"]["CH2"]["n"]
+        self.assertTrue([x for x in validate(r) if "not every channel has 'n'" in x], validate(r))
+        r = copy.deepcopy(raw)
+        r["controls"]["rf_output"]["set"] = "OUTP{channel.n} {value}"
+        self.assertTrue([x for x in validate(r) if "isn't per_channel" in x], validate(r))
 
 
 if __name__ == "__main__":

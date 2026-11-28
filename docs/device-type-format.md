@@ -7,7 +7,9 @@ stored by the server in its data directory under the same layout.
 
 Examples: [`agilent.e3631a`](../devices/types/agilent.e3631a/1.0.0.yaml) (SCPI, channels),
 [`hp.6632a`](../devices/types/hp.6632a/1.0.0.yaml) (pre-SCPI, readable settings),
-[`hp.3457a`](../devices/types/hp.3457a/1.0.0.yaml) (pre-SCPI, settings not readable).
+[`hp.3457a`](../devices/types/hp.3457a/1.0.0.yaml) (pre-SCPI, settings not readable),
+[`hp.8714es`](../devices/types/hp.8714es/1.0.0.yaml) (channels numbered in the commands),
+[`generic.talk-meter`](../devices/types/generic.talk-meter/1.0.0.yaml) (sends nothing, only reads).
 
 Check a file without storing it: `types.validate` (protocol) returns every problem with its path.
 
@@ -57,8 +59,21 @@ channels:
 
 A control, readout or action with `per_channel: true` exists once per channel; its key is
 `<channel>.<name>` (e.g. `P6V.voltage`). Before its command the server sends the `select`
-command, unless the command itself contains `{channel}` (e.g. `MEAS:VOLT? {channel}`).
-Channel entries can carry any attributes; bounds refer to them as `'{channel.vmax}'`.
+command, unless the command itself names the channel (e.g. `MEAS:VOLT? {channel}`).
+Channel entries can carry any attributes; bounds refer to them as `'{channel.vmax}'`, and
+commands can use them too. Channel names are identifiers, so an instrument that numbers its
+channels gets an attribute for the number:
+
+```yaml
+channels:
+  list:
+    CH1: {label: 'Channel 1', n: 1}
+    CH2: {label: 'Channel 2', n: 2}
+controls:
+  start: {kind: number, per_channel: true, set: 'SENS{channel.n}:FREQ:STAR {value}', ...}
+```
+
+`select` is needed only when some per-channel command doesn't name its channel.
 
 ## Controls (settings)
 
@@ -80,6 +95,13 @@ controls:
 
 - **bool:** `values: {'on': 'ON', 'off': 'OFF'}` gives the tokens for `{value}` (quote `on`/`off`:
   unquoted they are YAML booleans). Responses `1/0/ON/OFF/TRUE/FALSE` or any number are understood.
+- **infer** (bool controls without `get`): judge the setting from a status readout the instrument
+  can report. `infer: {readout: status, any_bits: 515}` makes the control on while any of those
+  bits is set in the readout's value (the readout needs `parse: int`), and off otherwise. A get of
+  the control reads the readout, every reading of it (polled ones too) updates the control, and
+  the value is reported with source `inferred`. A set is still reported as `assumed` until the
+  next reading. The HP 6632A's output uses it: `STS?` has CV, +CC or -CC set only while the
+  output is on.
 - **enum:** `options` maps each value to `{label, token, response, match}`; `token` (default: the
   name) goes into `{value}`; a get response is matched against `response` (default: the token)
   or the `match` regex. Clients send the option name (case-insensitive).
@@ -173,4 +195,5 @@ sim:
   readouts:
     v_meas: {follows: voltage, when: output}         # same channel's setting while `output` is on
     reading: {value: 1.2345678, noise: 0.0000005}
+    status: {value: 1024, value_on: 1025, when: output}   # value_on while `output` is on
 ```

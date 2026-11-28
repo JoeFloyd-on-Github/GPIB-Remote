@@ -34,8 +34,9 @@ zipped from the server's copy. Requests on one WebSocket are answered in order, 
 
 A **key** names a control or readout of an instance: `output`, or `P6V.voltage` for a
 per-channel item. Each value is reported as `{"value", "t", "source"}` where `source` is
-`read` (read back from the instrument), `assumed` (last value set; the instrument can't be
-queried), or `unknown` (not yet known).
+`read` (read back from the instrument), `inferred` (the instrument can't be asked for it, so
+it's judged from a status reading: the type's `infer`), `assumed` (last value set; the
+instrument can't be queried), or `unknown` (not yet known).
 
 ## Control locks
 

@@ -369,7 +369,7 @@ export class InstrumentView {
   controlRow(key, d, ch, label) {
     const m = this.model;
     const cur = h("div", { class: "rval" });
-    const src = h("span", { class: "badge", hidden: true, title: "This instrument can't report the setting; this is the last value set." }, "assumed");
+    const src = h("span", { class: "badge", hidden: true }, "");
     const edit = h("div", { class: "redit" });
     let update;
     if (d.kind === "bool") {
@@ -420,7 +420,11 @@ export class InstrumentView {
       update: (e) => {
         cur.textContent = valueText(e.value, d);
         cur.classList.toggle("stale", e.value == null);
-        src.hidden = e.source !== "assumed";
+        src.hidden = e.source !== "assumed" && e.source !== "inferred";
+        src.textContent = e.source;
+        src.title = e.source === "inferred"
+          ? "This instrument can't report the setting; it is judged from " + ((d.infer || {}).readout || "a reading") + "."
+          : "This instrument can't report the setting; this is the last value set.";
         update(e);
       },
     };

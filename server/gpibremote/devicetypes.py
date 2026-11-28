@@ -96,6 +96,11 @@ class DeviceType:
         self.readouts = dict(raw.get("readouts") or {})
         self.actions = dict(raw.get("actions") or {})
         self.safe_off = list(raw.get("safe_off") or [])
+        # readout name -> controls whose on/off state is inferred from it (controls.*.infer)
+        self.inferred_by = {}
+        for cname, d in self.controls.items():
+            if d.get("infer"):
+                self.inferred_by.setdefault(d["infer"]["readout"], []).append(cname)
         self.init = list(raw.get("init") or [])
 
     # -- keys ---------------------------------------------------------------
@@ -134,9 +139,15 @@ class DeviceType:
     def select_cmd(self, channel):
         if channel is None or not self.channel_select:
             return None
-        return self.channel_select.format(channel=channel)
+        return self.render(self.channel_select, channel)
 
     def render(self, template, channel=None, value=None):
+        """Fill a command template: {value}, {channel} and channel attributes {channel.attr}."""
+        if channel is not None and "{channel." in template:
+            attrs = self.channels.get(channel) or {}
+            template = re.sub(r"\{channel\.([A-Za-z_]\w*)\}",
+                              lambda m: str(attrs.get(m.group(1), "")).replace("{", "{{").replace("}", "}}"),
+                              template)
         return template.format(channel=channel, value=value)
 
     def bound(self, d, which, channel):
@@ -324,6 +335,30 @@ def _check_roles(e, raw, channels):
             e.append("%s.function: required with functions" % p)
 
 
+def _check_infer(e, p, d, readouts):
+    """controls.X.infer: an on/off setting the instrument can't report, judged from a status
+    readout: on when any of `any_bits` is set in the readout's (integer) value, otherwise off."""
+    inf = d["infer"]
+    if d.get("kind") != "bool":
+        e.append("%s.infer: only for kind bool" % p)
+    if d.get("get"):
+        e.append("%s.infer: not with get (the instrument reports it)" % p)
+    if not isinstance(inf, dict) or set(inf) != {"readout", "any_bits"}:
+        e.append("%s.infer: needs exactly readout and any_bits" % p)
+        return
+    rd = readouts.get(inf["readout"])
+    if not isinstance(rd, dict):
+        e.append("%s.infer.readout: no such readout %r" % (p, inf["readout"]))
+    else:
+        if rd.get("parse") != "int":
+            e.append("%s.infer.readout: %r must have parse: int" % (p, inf["readout"]))
+        if bool(rd.get("per_channel")) != bool(d.get("per_channel")):
+            e.append("%s.infer.readout: per_channel must match the control's" % p)
+    bits = inf["any_bits"]
+    if isinstance(bits, bool) or not isinstance(bits, int) or bits <= 0:
+        e.append("%s.infer.any_bits: a positive integer (a bit mask)" % p)
+
+
 def validate(raw):
     """Return a list of problems with a parsed type file (empty when valid)."""
     e = []
@@ -371,12 +406,11 @@ def validate(raw):
     for name in channels:
         if not KEY.match(str(name)):
             e.append("channels.list.%s: bad channel name" % name)
-    if channels and not ch.get("select"):
-        e.append("channels.select: required when channels are listed")
     if ch.get("select"):
         _check_template(e, "channels.select", ch["select"], ["channel"])
 
     names = set()
+    unnamed = []    # per-channel commands that don't name their channel, so need channels.select
     for section in ("controls", "readouts", "actions"):
         items = raw.get(section) or {}
         if not isinstance(items, dict):
@@ -396,6 +430,16 @@ def validate(raw):
             if per and not channels:
                 e.append("%s: per_channel but the type has no channels" % p)
             allowed = ["channel", "value"] if section == "controls" else ["channel"]
+            cmds = [d.get(k) for k in ("set", "get", "query") if isinstance(d.get(k), str)]
+            cmds += [c for c in (d.get("send") or []) if isinstance(c, str)] if isinstance(d.get("send"), list) else []
+            for c in cmds:
+                if per and "{channel" not in c:
+                    unnamed.append(p)
+                for attr in re.findall(r"\{channel\.([A-Za-z_]\w*)\}", c):
+                    if not per:
+                        e.append("%s: {channel.%s} in a command that isn't per_channel" % (p, attr))
+                    elif any(attr not in (v or {}) for v in channels.values()):
+                        e.append("%s: not every channel has %r" % (p, attr))
             if section == "controls":
                 kind = d.get("kind")
                 if kind not in KINDS:
@@ -406,6 +450,8 @@ def validate(raw):
                     _check_template(e, p + ".set", d["set"], allowed)
                 if d.get("get"):
                     _check_template(e, p + ".get", d["get"], ["channel"])
+                if "infer" in d:
+                    _check_infer(e, p, d, raw.get("readouts") or {})
                 if kind == "enum" and not isinstance(d.get("options"), dict):
                     e.append("%s.options: required mapping for enum" % p)
                 for b in ("min", "max"):
@@ -462,6 +508,8 @@ def validate(raw):
                 e.append("%s[%d]: an item name or {label: [items]}" % (path, i))
     if raw.get("menu") is not None:
         check_menu(raw["menu"], "menu")
+    if unnamed and channels and not ch.get("select"):
+        e.append("channels.select: required, since %s doesn't name its channel" % unnamed[0])
     _check_roles(e, raw, channels)
     for k in ("init", "safe_off"):
         v = raw.get(k)
