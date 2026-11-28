@@ -186,12 +186,17 @@ class Phase3(unittest.TestCase):
         self.assertEqual((r.status, r.getheader("Content-Type")), (200, "application/zip"))
         name = re.search(r'filename="([^"]+)"', r.getheader("Content-Disposition")).group(1)
         self.assertRegex(name, r"^gpibctl-[0-9.]+\.zip$")
-        top = name[:-4] + "/"
+        top = ""   # files at the top: Windows' Extract All already makes a folder named after the zip
         with zipfile.ZipFile(io.BytesIO(body)) as z:
             names = set(z.namelist())
             for f in ("cli/gpibctl/__init__.py", "cli/gpibctl/__main__.py", "cli/gpibctl/api.py",
-                      "scripts/nickel_plating.py", "docs/api.md", "README.txt", "gpibctl.ini"):
+                      "scripts/nickel_plating.py", "docs/api.md", "README.txt", "gpibctl.ini", "gpibctl.cmd"):
                 self.assertIn(top + f, names)
+            self.assertEqual({n.split("/")[0] for n in names if "/" in n}, {"cli", "scripts", "docs"})
+            cmd = z.read("gpibctl.cmd")
+            self.assertIn(b"\r\n", cmd)
+            self.assertNotIn(b"\n", cmd.replace(b"\r\n", b""))
+            self.assertIn(b"cli\\gpibctl", cmd)
             self.assertFalse([n for n in names if "__pycache__" in n or n.endswith(".pyc")])
             ini = z.read(top + "gpibctl.ini").decode()
             self.assertIn("host = bench.lan", ini)
@@ -205,6 +210,11 @@ class Phase3(unittest.TestCase):
         p = subprocess.run([sys.executable, os.path.join(out, top, "cli", "gpibctl"), "--help"],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=self.tmp, timeout=60)
         self.assertEqual(p.returncode, 0, p.stdout)
+        if os.name == "nt":   # the Windows launcher, from another folder
+            p = subprocess.run(["cmd", "/c", os.path.join(out, "gpibctl.cmd"), "--help"],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=self.tmp, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stdout)
+            self.assertIn(b"usage", p.stdout.lower())
         # HEAD, and a Host header that isn't a plain host name.
         r, body = self.get("/download/gpibctl.zip", method="HEAD")
         self.assertEqual((r.status, body), (200, b""))

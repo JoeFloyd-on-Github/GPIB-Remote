@@ -104,10 +104,10 @@ jobs:
           grep -q "Get CLI" index.html
           curl -fsS -o cli.zip http://localhost:8080/download/gpibctl.zip
           mkdir cli && cd cli && unzip -q ../cli.zip
-          python3 */cli/gpibctl --host localhost inst create ci-psu agilent.e3631a 5
-          python3 */cli/gpibctl --host localhost ls | tee ls.txt
+          python3 cli/gpibctl --host localhost inst create ci-psu agilent.e3631a 5
+          python3 cli/gpibctl --host localhost ls | tee ls.txt
           grep -q "^ci-psu " ls.txt
-          python3 */cli/gpibctl --host localhost set ci-psu P6V.voltage 2.5
+          python3 cli/gpibctl --host localhost set ci-psu P6V.voltage 2.5
       - name: Update in place without restarting
         run: |
           before=$(systemctl show -p MainPID --value gpibremote)

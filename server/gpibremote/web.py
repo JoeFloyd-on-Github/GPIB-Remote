@@ -50,22 +50,38 @@ CLI_FILES = (("cli/gpibctl", r".*\.py$"), ("scripts", r".*\.py$"), ("docs", r"^(
 CLI_README = """gpibctl %(version)s: command-line client and test-script API for GPIB-Remote
 Downloaded from http://%(web)s/ ; the server's protocol port is %(host)s:%(port)d.
 
-Needs Python 3.9 or later and nothing else (standard library only).
+Needs Python 3.9 or later (python.org or the Microsoft Store) and nothing else.
 
-Run the CLI (from this folder; on Windows use `py` or `python` instead of `python3`):
-    python3 cli/gpibctl --host %(host)s config    # remember the server in ~/.gpibctl.ini
-    python3 cli/gpibctl ls                         # instruments, types, lock state
-    python3 cli/gpibctl menu                       # menu-driven control
-    python3 cli/gpibctl -h                         # everything else
+Windows: open this folder (the one holding this README, gpibctl.cmd and the cli folder) in
+PowerShell or a Command Prompt (in Explorer: File > Open Windows PowerShell, or type cmd in the
+address bar), then:
+    .\\gpibctl --host %(host)s config    # remember the server (in %%USERPROFILE%%\\.gpibctl.ini)
+    .\\gpibctl ls                         # instruments, types, lock state
+    .\\gpibctl menu                       # menu-driven control
+    .\\gpibctl -h                         # everything else
+gpibctl.cmd runs `py -3 cli\\gpibctl`, or `python cli\\gpibctl` when the py launcher is missing.
 
-gpibctl.ini here is the same setting: copy it to your home folder as .gpibctl.ini
-(%%USERPROFILE%%\\.gpibctl.ini on Windows) instead of running `config`, or set GPIBREMOTE_HOST.
+Linux, macOS, the Pi (from this folder):
+    python3 cli/gpibctl --host %(host)s config
+    python3 cli/gpibctl ls
+
+gpibctl.ini here is the same setting as `config`: copy it to your home folder as .gpibctl.ini
+instead, or set GPIBREMOTE_HOST.
 
 Test scripts: docs/api.md describes the API (cli/gpibctl/api.py). Scripts in scripts/ find it
 on their own, e.g.
-    python3 scripts/nickel_plating.py --setup --host %(host)s
+    py scripts\\nickel_plating.py --setup --host %(host)s       (python3 scripts/... elsewhere)
 
 Download again from the web client's Server page to get the server's current version.
+"""
+# Windows launcher: works from cmd and PowerShell (.\\gpibctl), from any current folder.
+CLI_CMD = """@echo off
+rem gpibctl launcher for Windows: gpibctl ls, gpibctl menu, gpibctl -h
+setlocal
+set "GPIBCTL=%~dp0cli\\gpibctl"
+where py >nul 2>nul
+if %errorlevel%==0 (py -3 "%GPIBCTL%" %*) else (python "%GPIBCTL%" %*)
+exit /b %errorlevel%
 """
 
 
@@ -79,9 +95,13 @@ def _version(src_root):
 
 
 def build_cli_zip(src_root, host="localhost", port=9000, web=None):
-    """The CLI download: (file name, zip bytes). Files are read from src_root (the repository)."""
+    """The CLI download: (file name, zip bytes). Files are read from src_root (the repository).
+
+    The files are at the zip's top level, with no folder around them: Windows' Extract All (and
+    most unzip tools on a Mac) already put them in a folder named after the zip, and a second
+    folder inside left people one level above cli/ and gpibctl.cmd."""
     version = _version(src_root)
-    top = "gpibctl-%s/" % version
+    top = ""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for rel_dir, pattern in CLI_FILES:
@@ -97,6 +117,7 @@ def build_cli_zip(src_root, host="localhost", port=9000, web=None):
         info = {"version": version, "host": host, "port": port, "web": web or host}
         z.writestr(top + "README.txt", (CLI_README % info).replace("\n", "\r\n"))
         z.writestr(top + "gpibctl.ini", "[server]\r\nhost = %s\r\nport = %d\r\n" % (host, port))
+        z.writestr(top + "gpibctl.cmd", CLI_CMD.replace("\n", "\r\n"))
     return "gpibctl-%s.zip" % version, buf.getvalue()
 
 
