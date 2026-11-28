@@ -277,7 +277,8 @@ class Phase1(unittest.TestCase):
     def test_network_analyzer_channels(self):
         # Commands name the channel through a channel attribute (SENS{channel.n} -> SENS2), so no
         # select command is sent and each channel keeps its own settings.
-        self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.0.0", "address": {"pad": 16}})
+        r0 = self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.0.1", "address": {"pad": 16}})
+        self.assertTrue(r0["identify"]["match"])
         sim = self.stack.sim(16)
         r = self.a.request("dev.set", instance="vna", key="CH2.start", value=1e6)
         self.assertEqual((r["value"], r["source"]), (1e6, "read"))
@@ -333,9 +334,9 @@ class TypeUnits(unittest.TestCase):
         self.assertTrue([x for x in validate(r) if "only for kind bool" in x])
 
     def test_channel_select_rules(self):
-        raw = yaml.safe_load(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.0.yaml")))
+        raw = yaml.safe_load(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.1.yaml")))
         self.assertEqual(validate(raw), [])
-        dt = DeviceType(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.0.yaml")))
+        dt = DeviceType(_read(os.path.join(BUILTIN, "hp.8714es", "1.0.1.yaml")))
         self.assertEqual(dt.render(dt.controls["start"]["set"], "CH2", "5e6"), "SENS2:FREQ:STAR 5e6")
         r = copy.deepcopy(raw)       # a per-channel command without the channel needs a select command
         r["controls"]["power"]["set"] = "SOUR:POW {value}"
