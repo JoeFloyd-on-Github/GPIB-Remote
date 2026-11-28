@@ -220,7 +220,7 @@ class InstanceRuntime:
         """steps: list of (kind, command string or None); returns decoded responses."""
         if ready:
             await self._ensure_ready()
-        raw = [(k, None if c is None else self._enc(c)) for k, c in steps]
+        raw = [(k, c if k == "e" else None if c is None else self._enc(c)) for k, c in steps]
         try:
             out = await self.bus.call("transaction", self.pad, self.sad, raw,
                                       self.t.timeout if timeout is None else timeout, self.t.delay)
@@ -277,6 +277,16 @@ class InstanceRuntime:
     async def get(self, key, fresh=True):
         section, name, ch, d = self.t.item(key)
         template = d.get("get") if section == "controls" else d.get("query")
+        if section == "readouts" and d.get("decode"):
+            # Decoded from another readout (status bits): read that, which publishes this one.
+            if fresh:
+                src = d["decode"]["readout"]
+                await self.get("%s.%s" % (ch, src) if ch else src)
+            return self.cache.get(key) or {"value": None, "t": None, "source": "unknown"}
+        if section == "readouts" and fresh and d.get("unless"):
+            why = self._unavailable(key)
+            if why:
+                raise ValueRejected(why)
         if section == "controls" and (d.get("infer") or d.get("readback")) and fresh:
             # Can't be asked; read the status readout it is decoded from (which publishes it).
             await self.get(self._infer_source(name, ch))
@@ -322,6 +332,9 @@ class InstanceRuntime:
             if decoded is not None:
                 ckey = "%s.%s" % (ch, cname) if ch else cname
                 self._publish_state(ckey, decoded, self.t.status_spec(cname)[1], by="server: from %s" % key)
+        for dname in self.t.decoded_by.get(rname, ()):   # readings decoded from this one (status bits)
+            dkey = "%s.%s" % (ch, dname) if ch else dname
+            self._publish_reading(dkey, self.t.decode_value(dname, value))
         return entry
 
     def _infer_source(self, cname, ch):
@@ -350,36 +363,71 @@ class InstanceRuntime:
         self._remember(key, d, value)
         return entry
 
+    ERROR_DRAIN = 32    # most error-queue entries read in one go
+
+    def _drain_step(self):
+        return ("e", (self._enc(self.t.error_query), (self.t.error_none or "^$").encode("latin-1"),
+                      self.ERROR_DRAIN))
+
     async def _apply(self, key, d, ch, value, by):
+        check = bool(self.t.check_errors and self.t.error_query)
         steps, cmd = self._item_steps(d["set"], d, ch, self.t.format_value(d, value))
-        steps.append(("w", cmd))
+        # Empty the error queue first, so errors left by earlier commands (a poll the instrument
+        # refused in its present mode, say) aren't blamed on this set.
+        steps = ([self._drain_step()] if check else []) + steps + [("w", cmd)]
         if d.get("get"):
             gsteps, gcmd = self._item_steps(d["get"], d, ch)
             steps.append(("q", gcmd))
-        if self.t.check_errors and self.t.error_query:
-            steps.append(("q", self.t.error_query))
+        if check:
+            steps.append(self._drain_step())
         resp = await self._transact(steps)
-        if self.t.check_errors and self.t.error_query:
+        if check:
+            stale = resp.pop(0)
+            if stale:
+                log.info("%s: cleared earlier errors before setting %s: %s", self.id, key, stale.replace("\n", "; "))
             self._check_error(resp.pop())
+        entry = None
         if d.get("get"):
             try:
                 value = self.t.parse(d, resp[-1])
             except ValueError as exc:
                 raise DeviceError("bad_response", str(exc))
-            return self._publish_state(key, value, "read", by=by)
-        if d.get("readback"):     # read the status it is decoded from, to show what the instrument took
+            entry = self._publish_state(key, value, "read", by=by)
+        elif d.get("readback"):     # read the status it is decoded from, to show what the instrument took
             try:
                 await self.get(self._infer_source(self.t.split_key(key)[1], ch))
             except (DeviceError, ValueError) as exc:
                 log.debug("%s: read back %s: %s", self.id, key, exc)
-            entry = self.cache.get(key)
-            if entry is not None and entry["source"] == "read":
-                return entry
-        return self._publish_state(key, value, "assumed", by=by)
+            cached = self.cache.get(key)
+            if cached is not None and cached["source"] == "read":
+                entry = cached
+        if entry is None:
+            entry = self._publish_state(key, value, "assumed", by=by)
+        # Settings the instrument changes along with this one (the 8714ES brings back the format
+        # last used for a measurement).
+        for other in d.get("rereads") or ():
+            okey = "%s.%s" % (ch, other) if ch and self.t.item_per_channel(other) else other
+            try:
+                await self.get(okey)
+            except (DeviceError, ValueRejected, ValueError) as exc:
+                log.debug("%s: re-read %s after %s: %s", self.id, okey, key, exc)
+        return entry
 
     def _check_error(self, resp):
-        if self.t.error_none and not re.search(self.t.error_none, resp):
-            raise DeviceError("device_error", "instrument reported: %s" % resp)
+        if resp and self.t.error_none and not re.search(self.t.error_none, resp):
+            raise DeviceError("device_error", "instrument reported: %s" % "; ".join(
+                self.t.error_text(r) for r in resp.split("\n")))
+
+    def _unavailable(self, key):
+        """Why a readout can't be read in the present settings (its `unless`), or None."""
+        ch, name = self.t.split_key(key)
+        d = self.t.readouts.get(name) or {}
+        for cname, values in (d.get("unless") or {}).items():
+            ckey = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
+            cur = (self.cache.get(ckey) or {}).get("value")
+            if cur is not None and str(cur).upper() in {str(v).upper() for v in values}:
+                return "%s isn't available while %s is %s" % (key, cname, cur)
+        return None
 
     async def action(self, name, session, channel=None):
         a = self.t.actions.get(name)
@@ -400,6 +448,13 @@ class InstanceRuntime:
             for key in list(self.cache):
                 if self.cache[key]["source"] == "assumed":
                     del self.cache[key]
+        for cname, v in (a.get("assumes") or {}).items():   # known afterwards (power-on defaults)
+            d = self.t.controls[cname]
+            chans = ([channel] if channel else list(self.t.channels)) if d.get("per_channel") else [None]
+            for c in chans:
+                ckey = "%s.%s" % (c, cname) if c else cname
+                self._publish_state(ckey, self.t.coerce(d, v, c), "assumed", by="server: after %s" % name)
+        if a.get("refresh"):
             await self.refresh()
         return {}
 
@@ -476,6 +531,8 @@ class InstanceRuntime:
                     if interval is None or self._next_poll.get(key, 0) > now:
                         continue
                     self._next_poll[key] = now + interval
+                    if self._unavailable(key):      # e.g. marker value in Smith chart format
+                        continue
                     await self.get(key)
             except asyncio.CancelledError:
                 raise

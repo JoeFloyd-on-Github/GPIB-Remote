@@ -89,6 +89,7 @@ class DeviceType:
         self.error_query = errs.get("query")
         self.error_none = errs.get("none")
         self.check_errors = bool(errs.get("check_after_set", False))
+        self.error_codes = {int(k): str(v) for k, v in (errs.get("codes") or {}).items()}
         ch = raw.get("channels") or {}
         self.channel_select = ch.get("select")
         self.channels = dict(ch.get("list") or {})
@@ -102,6 +103,11 @@ class DeviceType:
             spec = d.get("readback") or d.get("infer")
             if spec:
                 self.inferred_by.setdefault(spec["readout"], []).append(cname)
+        # readout name -> readouts decoded from it (readouts.*.decode), e.g. status bits
+        self.decoded_by = {}
+        for rname, d in self.readouts.items():
+            if isinstance(d.get("decode"), dict):
+                self.decoded_by.setdefault(d["decode"]["readout"], []).append(rname)
         self.restore = bool(raw.get("restore", False))
         self.display = raw.get("display") or None
         self.init = list(raw.get("init") or [])
@@ -137,6 +143,11 @@ class DeviceType:
             else:
                 out.append(name)
         return out
+
+    def item_per_channel(self, name):
+        """True if the control or readout `name` is per channel."""
+        d = self.controls.get(name) or self.readouts.get(name) or {}
+        return bool(d.get("per_channel"))
 
     # -- commands -------------------------------------------------------------
     def select_cmd(self, channel):
@@ -182,29 +193,32 @@ class DeviceType:
         d = self.controls[cname]
         cases = spec.get("cases")
         if cases is None:   # infer: {readout, any_bits} (on while any of those bits is set)
-            cases, default = [{"any": spec["any_bits"], "value": True}], False
-        else:
-            default = spec.get("default")
-        for case in cases:
-            b = case.get("byte", spec.get("byte"))
-            if b:
-                if not isinstance(reading, str) or len(reading) < b:
-                    return None
-                v = ord(reading[b - 1])
-            elif isinstance(reading, bool) or not isinstance(reading, int):
+            spec = {"cases": [{"any": spec["any_bits"], "value": True}], "default": False}
+        found, value = _match_cases(spec, reading)
+        return None if not found else self.coerce(d, value)
+
+    def decode_value(self, rname, reading):
+        """A decoded readout's value (readouts.X.decode) from its source readout's value."""
+        d = self.readouts[rname]
+        spec = d["decode"]
+        if "bits" in spec:     # the names of the bits that are set, e.g. "CV, NORM"
+            if isinstance(reading, bool) or not isinstance(reading, int):
                 return None
-            else:
-                v = reading
-            if "equals" in case and v != case["equals"]:
-                continue
-            if "set" in case and v & case["set"] != case["set"]:
-                continue
-            if "clear" in case and v & case["clear"]:
-                continue
-            if "any" in case and not v & case["any"]:
-                continue
-            return self.coerce(d, case["value"])
-        return None if default is None else self.coerce(d, default)
+            names = [str(name) for bit, name in sorted(spec["bits"].items(), key=lambda kv: int(kv[0]))
+                     if reading & int(bit)]
+            return ", ".join(names) if names else str(spec.get("none", "none"))
+        found, value = _match_cases(spec, reading)
+        if not found:
+            return None
+        if d.get("parse") == "bool":
+            return self.coerce({"kind": "bool"}, value)
+        return str(value)
+
+    def error_text(self, response):
+        """An error-queue answer with the meaning of its code (errors.codes) added."""
+        m = re.search(r"-?\d+", response or "")
+        meaning = self.error_codes.get(int(m.group(0))) if m else None
+        return "%s (%s)" % (response, meaning) if meaning else response
 
     def coerce(self, d, value, channel=None, limits=None):
         """Check a client value against a control definition; return the canonical value."""
@@ -313,6 +327,36 @@ class DeviceType:
                 "identify": {"probe": self.probe, "match": self.match},
                 "has_safe_off": bool(self.safe_off), "roles": self.raw.get("roles") or {},
                 "display": self.display, "restore": self.restore}
+
+
+def _match_cases(spec, reading):
+    """(found, value) for a status decoding spec {byte?, cases, default?} and a readout value.
+
+    Each case tests one byte of a text readout (`byte`, counted from 1) or the integer value:
+    `equals` the whole value, `set` bits all 1, `clear` bits all 0, `any` at least one bit 1.
+    The first case that matches gives the value; otherwise `default` (not found without one)."""
+    for case in spec.get("cases") or ():
+        b = case.get("byte", spec.get("byte"))
+        if b:
+            if not isinstance(reading, str) or len(reading) < b:
+                return False, None
+            v = ord(reading[b - 1])
+        elif isinstance(reading, bool) or not isinstance(reading, int):
+            return False, None
+        else:
+            v = reading
+        if "equals" in case and v != case["equals"]:
+            continue
+        if "set" in case and v & case["set"] != case["set"]:
+            continue
+        if "clear" in case and v & case["clear"]:
+            continue
+        if "any" in case and not v & case["any"]:
+            continue
+        return True, case["value"]
+    if "default" in spec and spec["default"] is not None:
+        return True, spec["default"]
+    return False, None
 
 
 # ---------------------------------------------------------------------------------------------
@@ -478,6 +522,50 @@ def _check_status(e, p, d, readouts, key):
                 "cases test bytes of its text" if uses_byte else "cases test its integer value"))
 
 
+def _check_decode(e, p, d, readouts):
+    """readouts.X.decode: a reading decoded from another readout (a status register's bits)."""
+    spec = d["decode"]
+    if d.get("query") or d.get("read") or d.get("poll"):
+        e.append("%s.decode: not with query, read or poll (it comes from its source readout)" % p)
+    if d.get("parse") not in ("bool", "text"):
+        e.append("%s.parse: bool or text for a decoded readout" % p)
+        return
+    if isinstance(spec, dict) and "bits" in spec:
+        src = readouts.get(spec.get("readout"))
+        if not isinstance(src, dict):
+            e.append("%s.decode.readout: no such readout %r" % (p, spec.get("readout")))
+        elif src.get("parse") != "int":
+            e.append("%s.decode.readout: %r must have parse: int" % (p, spec.get("readout")))
+        elif bool(src.get("per_channel")) != bool(d.get("per_channel")):
+            e.append("%s.decode.readout: per_channel must match" % p)
+        if set(spec) - {"readout", "bits", "none"}:
+            e.append("%s.decode: unknown keys %s" % (p, ", ".join(sorted(set(spec) - {"readout", "bits", "none"}))))
+        if d.get("parse") != "text":
+            e.append("%s.parse: text for a decode with bits" % p)
+        bits = spec["bits"]
+        if not isinstance(bits, dict) or not bits or not all(
+                not isinstance(k, bool) and isinstance(k, int) and k > 0 and isinstance(v, str) for k, v in bits.items()):
+            e.append("%s.decode.bits: a mapping {bit weight: name}" % p)
+        return
+    if not isinstance(spec, dict) or not isinstance(spec.get("cases"), list):
+        e.append("%s.decode: needs readout and cases (or bits)" % p)
+        return
+    src = readouts.get(spec.get("readout"))
+    if isinstance(src, dict) and src.get("decode"):
+        e.append("%s.decode.readout: %r is itself decoded" % (p, spec.get("readout")))
+    if d.get("parse") == "bool":
+        pseudo = {"kind": "bool"}
+    else:
+        values = [c.get("value") for c in spec["cases"] if isinstance(c, dict)] + [spec.get("default")]
+        bad = [v for v in values if v is not None and not isinstance(v, str)]
+        if bad:
+            e.append("%s.decode: text values must be strings (%r)" % (p, bad[0]))
+        pseudo = {"kind": "enum", "options": {str(v): {} for v in values if v is not None}}
+    pseudo["per_channel"] = d.get("per_channel")
+    pseudo["decode"] = spec
+    _check_status(e, p, pseudo, readouts, "decode")
+
+
 def _check_display(e, raw):
     """display: what a client draws as the instrument's screen (kind network_analyzer)."""
     disp = raw.get("display")
@@ -540,6 +628,13 @@ def validate(raw):
             parse_seconds(conn.get(k))
         except ValueError as exc:
             e.append("connection.%s: %s" % (k, exc))
+
+    errs = raw.get("errors") or {}
+    codes = errs.get("codes") if isinstance(errs, dict) else None
+    if codes is not None:
+        if not isinstance(codes, dict) or not all(
+                not isinstance(k, bool) and isinstance(k, int) and isinstance(v, str) for k, v in codes.items()):
+            e.append("errors.codes: a mapping {error number: meaning}")
 
     ident = raw.get("identify") or {}
     if ident.get("match") is not None:
@@ -605,6 +700,15 @@ def validate(raw):
                         _check_status(e, p, d, raw.get("readouts") or {}, key)
                 if "restore" in d and not isinstance(d["restore"], bool):
                     e.append("%s.restore: true or false" % p)
+                if "rereads" in d:
+                    rr = d["rereads"]
+                    known = set(raw.get("controls") or {}) | set(raw.get("readouts") or {})
+                    if not isinstance(rr, list) or not rr:
+                        e.append("%s.rereads: a non-empty list of control or readout names" % p)
+                    else:
+                        for other in rr:
+                            if other not in known:
+                                e.append("%s.rereads: unknown control or readout %r" % (p, other))
                 if kind == "enum" and not isinstance(d.get("options"), dict):
                     e.append("%s.options: required mapping for enum" % p)
                 for b in ("min", "max"):
@@ -618,12 +722,35 @@ def validate(raw):
                     elif v is not None and (isinstance(v, bool) or not isinstance(v, (int, float))):
                         e.append("%s.%s: must be a number" % (p, b))
             elif section == "readouts":
-                if not d.get("query") and not d.get("read"):
-                    e.append("%s: needs 'query' or 'read: true'" % p)
+                if "decode" in d:
+                    _check_decode(e, p, d, raw.get("readouts") or {})
+                elif not d.get("query") and not d.get("read"):
+                    e.append("%s: needs 'query', 'read: true' or 'decode'" % p)
                 if d.get("query"):
                     _check_template(e, p + ".query", d["query"], allowed)
                 if "clear_srq" in d and not isinstance(d["clear_srq"], bool):
                     e.append("%s.clear_srq: true or false" % p)
+                if "unless" in d:
+                    un = d["unless"]
+                    ctrls = raw.get("controls") or {}
+                    if not isinstance(un, dict) or not un:
+                        e.append("%s.unless: a mapping {control: [values]}" % p)
+                    else:
+                        for cname, values in un.items():
+                            c = ctrls.get(cname)
+                            if not isinstance(c, dict):
+                                e.append("%s.unless: unknown control %r" % (p, cname))
+                                continue
+                            if c.get("per_channel") and not per:
+                                e.append("%s.unless.%s: a per-channel control needs a per-channel readout" % (p, cname))
+                            if not isinstance(values, list) or not values:
+                                e.append("%s.unless.%s: a non-empty list of values" % (p, cname))
+                                continue
+                            if c.get("kind") == "enum":
+                                opts = {str(o).upper() for o in (c.get("options") or {})}
+                                for v in values:
+                                    if str(v).upper() not in opts:
+                                        e.append("%s.unless.%s: %r is not an option" % (p, cname, v))
                 if d.get("trigger") not in (None, "get"):
                     e.append("%s.trigger: only 'get' is supported" % p)
                 try:
@@ -631,6 +758,21 @@ def validate(raw):
                 except ValueError as exc:
                     e.append("%s.poll: %s" % (p, exc))
             else:
+                if "assumes" in d:
+                    am = d["assumes"]
+                    ctrls = raw.get("controls") or {}
+                    if not isinstance(am, dict) or not am:
+                        e.append("%s.assumes: a mapping {control: value after the action}" % p)
+                    else:
+                        dt = DeviceType.__new__(DeviceType)
+                        for cname, v in am.items():
+                            if cname not in ctrls:
+                                e.append("%s.assumes: unknown control %r" % (p, cname))
+                                continue
+                            try:
+                                dt.coerce(ctrls[cname], v)
+                            except ValueRejected as exc:
+                                e.append("%s.assumes.%s: %s" % (p, cname, exc))
                 send = d.get("send")
                 if not isinstance(send, list) or not send:
                     e.append("%s.send: required non-empty list of commands" % p)

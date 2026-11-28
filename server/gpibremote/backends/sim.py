@@ -106,6 +106,7 @@ class TypeSimInstrument:
         self.remote = False
         self.triggers = 0
         self.log = []  # commands received, for tests
+        self.refuse = {}   # tests: command (upper case) -> error it queues instead of taking it
         # set templates, most specific (longest literal text) first so '{value}' alone is tried last
         sets = [(name, d, _template_regex(d["set"])) for name, d in dtype.controls.items()]
         self._sets = sorted(sets, key=lambda s: -len(re.sub(r"\{[^}]*\}", "", s[1]["set"])))
@@ -190,6 +191,9 @@ class TypeSimInstrument:
             if not cmd:
                 continue
             self.log.append(cmd)
+            if cmd.upper() in self.refuse:
+                self.errors.append(self.refuse[cmd.upper()])
+                continue
             resp = self._query(cmd)
             if resp is not None:
                 self.outq.append(resp)

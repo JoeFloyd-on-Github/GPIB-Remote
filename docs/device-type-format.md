@@ -39,7 +39,8 @@ identify:
 errors:
   query: 'SYST:ERR?'     # error-queue query
   none: '^\+?0,'         # regex for "no error"
-  check_after_set: true  # read the queue after every set; an error fails the set
+  check_after_set: true  # empty the queue before every set, read it after; an error fails the set
+  codes: {42: voltage out of range}   # optional: meanings added to reported errors
 init: ['END ALWAYS']     # sent once before the first command after the server starts
 safe_off: ['OUTP OFF']   # sent when an instance's safe_state asks for outputs off
 ```
@@ -119,6 +120,9 @@ controls:
 
   Values must be options of the enum (or `on`/`off`). The HP 3455A decodes its whole setup from
   the four bytes `B` makes it send.
+- **rereads**: `[format, marker_value]` reads those settings or readouts again (same channel)
+  after a set, for an instrument that changes them along with this one. The 8714ES brings back
+  the format last used for a kind of measurement when the measurement changes.
 - **restore** (per control, default true): `restore: false` keeps a control out of the saved
   settings (see *Restoring settings*).
 - **enum:** `options` maps each value to `{label, token, response, match}`; `token` (default: the
@@ -143,6 +147,28 @@ readouts:
 ```
 
 `parse: {regex: 'VOUT\s+(\S+)', as: number}` applies the regex first and parses group 1.
+A readout can be **decoded** from another one instead of queried, for status registers whose
+bits mean different things. Decoding happens on every reading of the source (polled ones too);
+a get reads the source.
+
+```yaml
+  mode:
+    parse: text           # text or bool
+    decode:
+      readout: status     # the source; parse: int (or text, with byte)
+      cases:              # as in readback: equals / set / clear / any, first match wins
+        - {set: 8, value: 'OV tripped'}
+        - {set: 1, value: CV}
+      default: 'Off'
+  cv: {parse: bool, decode: {readout: status, cases: [{set: 1, value: 'on'}], default: 'off'}}
+  status_bits:
+    parse: text
+    decode: {readout: status, bits: {1: CV, 2: +CC, 1024: FAST}}   # names of the set bits: "CV, FAST"
+```
+
+`unless: {format: [SMIT]}` skips a readout while a control (same channel) has one of those values:
+it isn't polled, and a get is refused with a message, for a query the instrument refuses in that
+mode (8714ES marker value in Smith format).
 `parse: list` splits on commas into a list of numbers (a trace). `clear_srq: true` follows the
 query with a serial poll, for an instrument that raises SRQ when asked for its status (3455A `B`).
 
@@ -156,6 +182,7 @@ actions:
     confirm: true         # clients ask before running it
     refresh: true         # read all settings back afterwards
     resets: true          # returns the instrument to power-on settings: forget the saved settings
+    assumes: {voltage: 0, output: 'on'}   # settings known afterwards (shown as assumed)
 ```
 
 ## Restoring settings

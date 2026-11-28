@@ -144,13 +144,103 @@ class Phase4(unittest.TestCase):
         model = self.a.request("types.get", type="hp.8714es@1.1.0")
         self.assertEqual(model["model"]["display"]["kind"], "network_analyzer")
 
+    def test_stale_errors_are_not_blamed_on_a_set(self):
+        self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.2.0", "address": {"pad": 16}})
+        sim = self.stack.sim(16)
+        # A poll the analyzer refused earlier filled its error queue.
+        sim.errors[:] = ['-221,"Settings conflict; Marker value query not valid on this type of measurement."'] * 5 \
+            + ['-350,"Too many errors"']
+        r = self.a.request("dev.set", instance="vna", key="CH1.measurement", value="S11")
+        self.assertEqual((r["value"], r["source"]), ("S11", "read"))
+        self.assertEqual(sim.errors, [])
+        # The set's own error is still reported, and the setting shows what the analyzer kept.
+        sim.refuse["CALC2:FORM SMIT"] = '-221,"Settings conflict; Smith Chart format is only valid when measuring Reflection."'
+        with self.assertRaises(Exception) as cm:
+            self.a.request("dev.set", instance="vna", key="CH2.format", value="SMIT")
+        self.assertIn("only valid when measuring Reflection", str(cm.exception))
+        self.assertEqual(sim.errors, [])
+
+    def test_measurement_rereads_format_and_marker_skipped_in_smith(self):
+        self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.2.0", "address": {"pad": 16}})
+        sim = self.stack.sim(16)
+        self.a.request("dev.set", instance="vna", key="CH1.measurement", value="S11")
+        i = sim.log.index('SENS1:FUNC "XFR:S 1,1"')
+        self.assertIn("CALC1:FORM?", sim.log[i:])               # the analyzer may have changed format with it
+        self.a.request("dev.set", instance="vna", key="CH1.format", value="SMIT")
+        n = len(sim.log)
+        with self.assertRaises(Exception) as cm:
+            self.a.request("dev.get", instance="vna", key="CH1.marker_value")
+        self.assertIn("while format is SMIT", str(cm.exception))
+        self.assertNotIn("CALC1:MARK1:Y?", sim.log[n:])
+        self.a.request("dev.set", instance="vna", key="CH1.format", value="POL")
+        self.assertIsNotNone(self.a.request("dev.get", instance="vna", key="CH1.marker_value")["value"])
+
+
+class Supply6632A(unittest.TestCase):
+    """hp.6632a 1.4.0: status register decoded bit by bit (manual Table 6-4)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="gpibremote-test-")
+        self.stack = Stack(os.path.join(self.tmp, "data"))
+        self.a = self.stack.client("alice")
+        self.a.request("instances.create", instance={"id": "psu", "type": "hp.6632a@1.4.0", "address": {"pad": 6}})
+        self.sim = self.stack.sim(6)
+
+    def tearDown(self):
+        self.a.close()
+        self.stack.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def get(self, key):
+        return self.a.request("dev.get", instance="psu", key=key)["value"]
+
+    def status(self, value):
+        self.sim.sim_readouts["status"] = {"value": value}
+        self.a.request("dev.get", instance="psu", key="status")
+        state = self.a.request("dev.state", instance="psu")["state"]
+        return {k: state[k]["value"] for k in state}
+
+    def test_status_bits_decoded(self):
+        s = self.status(1024)                      # output off, FAST switch (the bench unit)
+        self.assertEqual((s["mode"], s["status_bits"], s["response"], s["output"], s["cv"]),
+                         ("Off", "FAST", "FAST", False, False))
+        s = self.status(1 + 2048)                  # CV, NORMAL
+        self.assertEqual((s["mode"], s["status_bits"], s["response"], s["output"], s["cv"]),
+                         ("CV", "CV, NORM", "NORMAL", True, True))
+        s = self.status(512 + 1024)                # sinking current
+        self.assertEqual((s["mode"], s["cc_neg"], s["output"]), ("-CC (sinking)", True, True))
+        s = self.status(8 + 128 + 1024)            # OV trip with a programming error: output disabled
+        self.assertEqual((s["mode"], s["ov_tripped"], s["prog_error"], s["output"]),
+                         ("OV tripped (output disabled)", True, True, False))
+        self.assertEqual(self.get("unregulated"), False)       # a get reads STS? again
+        self.sim.sim_readouts["astatus"] = {"value": 2 + 4 + 1024}
+        self.assertEqual(self.get("astatus_bits"), "+CC, UNR, FAST")
+        self.sim.sim_readouts["fault"] = {"value": 0}
+        self.assertEqual(self.get("fault_bits"), "none")
+
+    def test_error_codes_explained(self):
+        self.sim.refuse["VSET 20"] = "42"
+        with self.assertRaises(Exception) as cm:
+            self.a.request("dev.set", instance="psu", key="voltage", value=20)
+        self.assertIn("42 (voltage out of range)", str(cm.exception))
+
+    def test_clear_gives_power_on_values(self):
+        self.a.request("dev.set", instance="psu", key="voltage", value=5)
+        self.a.request("dev.set", instance="psu", key="ocp", value="on")
+        self.a.request("dev.action", instance="psu", action="clear")
+        state = self.a.request("dev.state", instance="psu")["state"]
+        self.assertEqual({k: state[k]["value"] for k in ("voltage", "current", "ovp", "ocp", "srq", "display")},
+                         {"voltage": 0, "current": 0.02, "ovp": 22, "ocp": False, "srq": False, "display": True})
+        self.assertEqual(state["voltage"]["source"], "assumed")
+
 
 class Phase4Types(unittest.TestCase):
     def raw(self, t, v):
         return yaml.safe_load(_read(os.path.join(BUILTIN, t, v + ".yaml")))
 
     def test_new_types_valid(self):
-        for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0")):
+        for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0"),
+                     ("hp.8714es", "1.2.0"), ("hp.6632a", "1.4.0")):
             self.assertEqual(validate(self.raw(t, v)), [], t)
 
     def bad(self, raw, msg):
@@ -177,6 +267,27 @@ class Phase4Types(unittest.TestCase):
         r = copy.deepcopy(raw)
         r["restore"] = "yes"
         self.bad(r, "restore: true or false")
+
+    def test_decode_validation(self):
+        raw = self.raw("hp.6632a", "1.4.0")
+        r = copy.deepcopy(raw)
+        r["readouts"]["cv"]["parse"] = "int"
+        self.bad(r, "bool or text for a decoded readout")
+        r = copy.deepcopy(raw)
+        r["readouts"]["status_bits"]["decode"]["readout"] = "model"
+        self.bad(r, "must have parse: int")
+        r = copy.deepcopy(raw)
+        r["readouts"]["mode"]["poll"] = "1s"
+        self.bad(r, "not with query, read or poll")
+        r = copy.deepcopy(raw)
+        r["errors"]["codes"]["x"] = "bad"
+        self.bad(r, "errors.codes")
+        r = copy.deepcopy(raw)
+        r["actions"]["clear"]["assumes"]["nonesuch"] = 1
+        self.bad(r, "unknown control 'nonesuch'")
+        r = copy.deepcopy(raw)
+        r["actions"]["clear"]["assumes"]["voltage"] = 99
+        self.bad(r, "assumes.voltage")
 
     def test_display_validation(self):
         raw = self.raw("hp.8714es", "1.1.0")

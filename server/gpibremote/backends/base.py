@@ -4,6 +4,7 @@ All methods are blocking and must be called from the board's bus worker thread o
 Addresses are (pad, sad): primary address 0-30, secondary address 0 for none or 0x60-0x7e.
 """
 
+import re
 import time
 
 # NI-488 timeout codes (T10us .. T1000s) and their durations in seconds.
@@ -81,7 +82,9 @@ class Backend:
         """Run several operations on one device with nothing else in between.
 
         steps: list of ("w", bytes) write, ("q", bytes) write then read, ("r", None) read,
-        ("t", None) group execute trigger, ("p", None) serial poll (result discarded).
+        ("t", None) group execute trigger, ("p", None) serial poll (result discarded),
+        ("e", (query, none_regex, limit)) empty the error queue: ask `query` until the answer
+        matches `none_regex` (bytes), at most `limit` times; gives the errors found, one per line.
         Returns the list of bytes read, in order.
         """
         out = []
@@ -94,6 +97,16 @@ class Backend:
                 self.trigger(pad, sad)
             if kind == "p":
                 self.serial_poll(pad, sad, timeout)
+            if kind == "e":
+                query, none_re, limit = data
+                found = []
+                for _ in range(limit):
+                    self.write(pad, sad, query, timeout)
+                    answer = self.read(pad, sad, max_bytes, timeout).strip()
+                    if re.search(none_re, answer):
+                        break
+                    found.append(answer)
+                out.append(b"\n".join(found))
             if kind in ("q", "r"):
                 out.append(self.read(pad, sad, max_bytes, timeout))
         return out

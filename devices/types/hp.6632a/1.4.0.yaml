@@ -1,0 +1,271 @@
+schema: 1
+type: hp.6632a
+version: '1.4.0'
+title: HP 6632A System DC Power Supply (20 V / 5 A)
+manufacturer: Hewlett-Packard
+model: 6632A
+verified: false         # queries checked on the bench unit (ROM B01); 1.4.0 rewritten from the operating manual
+description: >
+  Pre-SCPI HP-IB power supply (20 V, 5 A, two quadrants: it can sink current). Settings can't be
+  read back: the instrument has no VSET?, ISET?, OVSET?, OCP? or OUT? query, so the server shows
+  each setting as the value it last sent ("assumed"), and knows the power-on values after a
+  Device clear. The status register (STS?) is decoded bit by bit (Table 6-4): operating mode
+  (CV, +CC, -CC, unregulated), protection trips (OV, OC, over-temperature), programming error,
+  remote inhibit and the rear-panel FAST/NORMAL switch. The output's on/off state is inferred
+  from it: CV, +CC or -CC is set only while the output is on and regulating.
+references:
+  - HP 6632A/6633A/6634A Operating Manual, Section VI (remote programming), Tables 6-1, 6-2, 6-4, 6-6, 6-7
+  - Same manual, Section IV (output characteristic, unregulated state, NORMAL/FAST modes) and Section V (front panel)
+notes: >
+  Power-on and Device clear (CLR, or GPIB SDC/DCL) state: VSET 0, ISET minimum (0.02 A), OVSET
+  maximum (22 V), OCP off, output ON, UNMASK 0, SRQ off, display on, reprogramming delay 8 ms
+  (FAST) or 80 ms (NORMAL). So a GPIB device clear turns the output on (at 0 V). ISET below
+  0.02 A is set to 0.02 A without an error; values are rounded to the resolution. OVP senses at
+  the output terminals, not the sense leads. OV and OC trips disable the output until RST (after
+  removing the cause) or CLR; the OCP trips when the output goes from CV into CC while OCP is on.
+  DLY masks CV, +CC, -CC and UNR from the fault register and the OCP for that long after VSET,
+  ISET, CLR, RST or OUT. Serial poll bits: 1 FAU (a fault register bit is set), 2 PON (set at
+  power-on, cleared by CLR), 16 RDY, 32 ERR, 64 RQS. PON n (SRQ at power-on) is kept in
+  non-volatile memory and accepted once per power cycle (a second one is error 2), and the
+  calibration commands (CMODE, CDATA, CSAVE) write EEPROM, so this type sends neither.
+  On the bench unit STS? reads 1024 (FAST) with the output off and 1025 (CV, FAST) with it on.
+
+connection:
+  eos: "\n"             # responses end with CR LF; reads stop at LF
+  write_termination: "\n"
+  timeout: 3s
+
+identify:
+  probe: 'ID?'          # answers 'HP6632A'; no *IDN? on this generation
+  match: '6632A'
+
+errors:
+  query: 'ERR?'
+  none: '^\s*\+?0\s*$'
+  check_after_set: true
+  codes:                # Table 6-6
+    1: EEPROM save failed
+    2: second PON command after power-on
+    4: second DC PON command after power-on
+    5: no relay option present
+    8: addressed to talk with nothing to say (no query was sent)
+    10: header expected
+    11: unrecognized header
+    20: number expected
+    21: number syntax
+    22: number out of internal range
+    30: comma expected
+    31: terminator expected
+    41: parameter out of range
+    42: voltage out of range
+    43: current out of range
+    44: overvoltage setting out of range
+    45: delay out of range
+    46: mask out of range
+    50: more than one CSAVE after power-on
+    51: EEPROM checksum
+    52: calibration mode disabled
+    53: calibration channel out of range
+    54: calibration full scale out of range
+    55: calibration offset out of range
+    59: calibration disable jumper in
+
+controls:
+  output:
+    kind: bool
+    label: Output
+    description: OUT 1 / OUT 0. On at power-on. Shown from the status register (CV, +CC or -CC set).
+    set: 'OUT {value}'
+    values: {'on': '1', 'off': '0'}
+    infer: {readout: status, any_bits: 515}   # on while STS? shows CV (1), +CC (2) or -CC (512)
+  voltage:
+    kind: number
+    label: Voltage
+    unit: V
+    resolution: 0.005
+    min: 0
+    max: 20.475
+    set: 'VSET {value}'
+  current:
+    kind: number
+    label: Current limit
+    description: 0.02 A is the smallest the supply takes; anything lower is set to 0.02 A.
+    unit: A
+    resolution: 0.00125
+    min: 0
+    max: 5.1188
+    set: 'ISET {value}'
+  ovp:
+    kind: number
+    label: Overvoltage trip
+    description: Fires the SCR crowbar and disables the output when the output terminals exceed it.
+    unit: V
+    resolution: 0.1
+    min: 0
+    max: 22
+    set: 'OVSET {value}'
+  ocp:
+    kind: bool
+    label: Overcurrent protection
+    description: When on, going from CV into CC disables the output (OC) until RST or CLR.
+    set: 'OCP {value}'
+    values: {'on': '1', 'off': '0'}
+  delay:
+    kind: number
+    label: Reprogramming delay
+    description: >
+      How long after VSET, ISET, CLR, RST or OUT the CV/CC/UNR bits are kept from the fault
+      register and from tripping the OCP. 4 ms steps; default 8 ms (FAST) or 80 ms (NORMAL).
+    unit: s
+    resolution: 0.004
+    min: 0
+    max: 32.767
+    set: 'DLY {value}'
+  mask:
+    kind: number
+    label: Fault mask (UNMASK)
+    description: Status bits (Table 6-4 weights, added) that set the fault register when they come on.
+    min: 0
+    max: 4095
+    format: '%d'
+    set: 'UNMASK {value}'
+  srq:
+    kind: bool
+    label: Service request on fault
+    set: 'SRQ {value}'
+    values: {'on': '1', 'off': '0'}
+  display:
+    kind: bool
+    label: Front-panel display
+    description: Off speeds up command handling and, in FAST mode, lowers output noise.
+    set: 'DSP {value}'
+    values: {'on': '1', 'off': '0'}
+
+readouts:
+  v_meas: {label: Measured voltage, unit: V, query: 'VOUT?', poll: 2s}
+  i_meas: {label: Measured current, unit: A, description: Negative while sinking current (-CC)., query: 'IOUT?', poll: 2s}
+  status:
+    label: Status register (STS?)
+    description: 'Table 6-4: 1 CV, 2 +CC, 4 UNR, 8 OV, 16 OT, 64 OC, 128 ERR, 256 INH, 512 -CC, 1024 FAST, 2048 NORM'
+    query: 'STS?'
+    parse: int
+    poll: 2s
+  status_bits:
+    label: Status
+    parse: text
+    decode:
+      readout: status
+      bits: {1: CV, 2: +CC, 4: UNR, 8: OV, 16: OT, 64: OC, 128: ERR, 256: INH, 512: -CC, 1024: FAST, 2048: NORM}
+  mode:
+    label: Operating mode
+    description: What the output is doing, protection trips first.
+    parse: text
+    decode:
+      readout: status
+      cases:
+        - {set: 8, value: 'OV tripped (output disabled)'}
+        - {set: 64, value: 'OC tripped (output disabled)'}
+        - {set: 16, value: 'Over-temperature (output disabled)'}
+        - {set: 256, value: 'Inhibited'}
+        - {set: 4, value: 'Unregulated'}
+        - {set: 1, value: 'CV'}
+        - {set: 2, value: '+CC'}
+        - {set: 512, value: '-CC (sinking)'}
+      default: 'Off'
+  cv: {label: Constant voltage (CV), parse: bool, decode: {readout: status, cases: [{set: 1, value: 'on'}], default: 'off'}}
+  cc_pos: {label: Constant current (+CC), parse: bool, decode: {readout: status, cases: [{set: 2, value: 'on'}], default: 'off'}}
+  cc_neg: {label: Negative constant current (-CC), parse: bool, decode: {readout: status, cases: [{set: 512, value: 'on'}], default: 'off'}}
+  unregulated:
+    label: Unregulated (UNR)
+    description: Neither CV nor CC can hold, e.g. low AC line or too much drop in the load leads.
+    parse: bool
+    decode: {readout: status, cases: [{set: 4, value: 'on'}], default: 'off'}
+  ov_tripped: {label: Overvoltage tripped (OV), parse: bool, decode: {readout: status, cases: [{set: 8, value: 'on'}], default: 'off'}}
+  oc_tripped: {label: Overcurrent tripped (OC), parse: bool, decode: {readout: status, cases: [{set: 64, value: 'on'}], default: 'off'}}
+  overtemp:
+    label: Over-temperature (OT)
+    description: The output comes back with its settings once the supply has cooled.
+    parse: bool
+    decode: {readout: status, cases: [{set: 16, value: 'on'}], default: 'off'}
+  prog_error:
+    label: Programming error (ERR)
+    description: Cleared when the error is read.
+    parse: bool
+    decode: {readout: status, cases: [{set: 128, value: 'on'}], default: 'off'}
+  inhibited: {label: Remote inhibit (INH), parse: bool, decode: {readout: status, cases: [{set: 256, value: 'on'}], default: 'off'}}
+  response:
+    label: Response mode (rear switch)
+    description: 'FAST: quicker programming, more noise, no output capacitor. NORMAL: recommended.'
+    parse: text
+    decode:
+      readout: status
+      cases: [{set: 1024, value: FAST}, {set: 2048, value: NORMAL}]
+  astatus:
+    label: Accumulated status (ASTS?)
+    description: Every status bit that has been on since the last ASTS?; reading it resets it to the present status.
+    query: 'ASTS?'
+    parse: int
+  astatus_bits:
+    label: Accumulated status
+    parse: text
+    decode:
+      readout: astatus
+      bits: {1: CV, 2: +CC, 4: UNR, 8: OV, 16: OT, 64: OC, 128: ERR, 256: INH, 512: -CC, 1024: FAST, 2048: NORM}
+  fault:
+    label: Fault register (FAULT?)
+    description: Unmasked status bits that came on; reading it clears it.
+    query: 'FAULT?'
+    parse: int
+  fault_bits:
+    label: Faults
+    parse: text
+    decode:
+      readout: fault
+      bits: {1: CV, 2: +CC, 4: UNR, 8: OV, 16: OT, 64: OC, 128: ERR, 256: INH, 512: -CC, 1024: FAST, 2048: NORM}
+  self_test:
+    label: Self-test (TEST?)
+    description: >
+      0 passed. 1-5 HP-IB circuit (ROM, RAM, HP-IB chip, timer), 11-24 and 51 power-supply
+      interface (ROM, RAM, timer, A/D, CV/CC zero, CV/CC reference, DAC, EEPROM). Doesn't change
+      the output.
+    query: 'TEST?'
+    parse: int
+  model: {label: 'Model (ID?)', query: 'ID?', parse: text}
+  firmware: {label: 'ROM version (ROM?)', description: 'HP-IB interface ROM, then power-supply interface ROM.', query: 'ROM?', parse: text}
+
+actions:
+  reset_protection:
+    label: Reset OV/OC protection (RST)
+    description: Remove the cause first (VSET below OVSET; OCP off or ISET above the load current), or it trips again.
+    send: ['RST']
+  clear:
+    label: Clear (power-on state)
+    description: CLR. VSET 0, ISET 0.02 A, OVSET 22 V, OCP off, output ON, no mask, SRQ off, display on.
+    send: ['CLR']
+    confirm: true
+    assumes: {voltage: 0, current: 0.02, ovp: 22, ocp: 'off', output: 'on', mask: 0, srq: 'off', display: 'on'}
+    refresh: true
+
+safe_off: ['OUT 0']
+
+roles:
+  supply: {voltage: voltage, current: current, output: output, v_meas: v_meas, i_meas: i_meas, ovp: ovp}
+
+menu:
+  - Output: [output, voltage, current, v_meas, i_meas, mode]
+  - Protection: [ovp, ocp, delay, ov_tripped, oc_tripped, overtemp, reset_protection]
+  - Status: [status_bits, cv, cc_pos, cc_neg, unregulated, prog_error, inhibited, response, status, astatus, astatus_bits]
+  - Faults: [mask, srq, fault, fault_bits]
+  - System: [display, self_test, model, firmware, clear]
+
+sim:
+  identity: 'HP6632A'
+  readouts:
+    v_meas: {follows: voltage, when: output}
+    i_meas: {value: 0.0}
+    status: {value: 1024, value_on: 1025, when: output}
+    astatus: {value: 1025}
+    fault: {value: 0}
+    self_test: {value: 0}
+    model: {value: 'HP6632A'}
+    firmware: {value: 'B01 B01'}
