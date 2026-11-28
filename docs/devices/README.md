@@ -10,7 +10,7 @@ file as downloaded.
 | HP 3455A digital voltmeter | `hp.3455a` 1.0.0 | 1 | Operating and Service Manual (two scans); status bytes decoded on the bench | [hp-3455a](hp-3455a/README.md) |
 | HP 3456A digital voltmeter | `hp.3456a` 1.0.0 | 17 | Quick reference card; Operating and Service Manual (read online); bench | [hp-3456a](hp-3456a/README.md) |
 | HP 6632A system DC power supply | `hp.6632a` 1.4.0 | 5 | Operating Manual, Sections III to VI; bench | [hp-6632a](hp-6632a/README.md) |
-| HP 8714ES RF network analyzer | `hp.8714es` 1.2.0 | 16 | No manual: every command checked on the analyzer itself | [hp-8714es](hp-8714es/README.md) |
+| HP 8714ES RF network analyzer | `hp.8714es` 1.3.0 | 16 | Programmer's Guide (added later); every command also checked on the analyzer | [hp-8714es](hp-8714es/README.md) |
 
 Types made in earlier sessions name their manuals in the type file (`references:`) but no copy
 was kept: Agilent E3631A (User's Guide, chapter 4) and HP 3457A (Operating, Programming and
@@ -26,6 +26,7 @@ Configuration Manual).
 | (read online, not downloaded) | 3456A | https://www.manualslib.com/manual/1303474/Hp-3456a.html (pages 57 and 307) |
 | `hp-6632a/manuals/HP_6632A_33A_34A_Operating_Manual.pdf` | 6632A | https://xn--jyvskyl-7wae.hacklab.fi/wp-content/uploads/2025/10/HP_6632A_33A_34A_Operating_manual.pdf |
 | (not downloaded; the scan above is clearer) | 6632A | https://www.keysight.com/tr/en/assets/9018-05839/user-manuals/9018-05839.pdf |
+| `hp-8714es/manuals/HP 8714ES Programming Guide 9018-40026.pdf` | 8714ES | added to the repo by the owner (Keysight document 9018-40026; part 08714-90015, June 2000) |
 
 The manuals are copyright Hewlett-Packard / Keysight Technologies; the quick reference card is
 by Martin Hepperle. They are kept here as references for this project's device types.

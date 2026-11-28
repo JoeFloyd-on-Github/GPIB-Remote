@@ -85,6 +85,8 @@ class Backend:
         ("t", None) group execute trigger, ("p", None) serial poll (result discarded),
         ("e", (query, none_regex, limit)) empty the error queue: ask `query` until the answer
         matches `none_regex` (bytes), at most `limit` times; gives the errors found, one per line.
+        ("b", bytes) write a query, then read a binary definite-length block (#<n><length><data>)
+        and give its data bytes.
         Returns the list of bytes read, in order.
         """
         out = []
@@ -109,7 +111,44 @@ class Backend:
                 out.append(b"\n".join(found))
             if kind in ("q", "r"):
                 out.append(self.read(pad, sad, max_bytes, timeout))
+            if kind == "b":
+                self.write(pad, sad, data, timeout)
+                out.append(self.read_block(pad, sad, max_bytes, timeout))
         return out
+
+    def read_block(self, pad, sad, max_bytes=1 << 20, timeout=3.0):
+        """Read an IEEE 488.2 definite-length block and the terminator after it; return the data.
+
+        Reads that end on the EOS byte stop early wherever the data holds that byte, so this
+        keeps reading until the length the header gives has arrived.
+        """
+        buf = self.read(pad, sad, max_bytes, timeout)
+        start = buf.find(b"#")
+        while start < 0 and len(buf) < 64:
+            buf += self.read(pad, sad, max_bytes, timeout)
+            start = buf.find(b"#")
+        if start < 0:
+            raise GpibError("expected a #-block from %d, got %r" % (pad, buf[:40]))
+        while len(buf) < start + 2:
+            buf += self.read(pad, sad, max_bytes, timeout)
+        if not buf[start + 1:start + 2].isdigit() or buf[start + 1:start + 2] == b"0":
+            raise GpibError("only definite-length blocks are supported (got %r)" % buf[start:start + 12])
+        digits = int(buf[start + 1:start + 2])
+        while len(buf) < start + 2 + digits:
+            buf += self.read(pad, sad, max_bytes, timeout)
+        length = int(buf[start + 2:start + 2 + digits])
+        begin = start + 2 + digits
+        end = begin + length
+        if end > max_bytes:
+            raise GpibError("block of %d bytes is larger than the %d allowed" % (length, max_bytes))
+        while len(buf) < end:
+            buf += self.read(pad, sad, max_bytes, timeout)
+        if len(buf) == end:     # the last read stopped on a data byte equal to EOS: the terminator is still to come
+            try:
+                self.read(pad, sad, 16, timeout)
+            except GpibTimeout:
+                pass
+        return buf[begin:end]
 
     # -- bus ----------------------------------------------------------------
     def listeners(self, pads=range(1, 31)):

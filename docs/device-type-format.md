@@ -41,12 +41,21 @@ errors:
   none: '^\+?0,'         # regex for "no error"
   check_after_set: true  # empty the queue before every set, read it after; an error fails the set
   codes: {42: voltage out of range}   # optional: meanings added to reported errors
+complete:                # optional: a query the instrument answers once its commands have finished
+  query: '*OPC?'
+  timeout: 30s           # how long a wait may take (default 30 s)
 init: ['END ALWAYS']     # sent once before the first command after the server starts
 safe_off: ['OUTP OFF']   # sent when an instance's safe_state asks for outputs off
 ```
 
 Older HP-IB instruments may misread characters they don't expect, so give them a probe they
 understand (`ID?`) or `probe: null`.
+
+`wait: true` on a control or an action sends the `complete` query after it and waits for the
+answer, in the same bus operation, before the setting is read back. Use it for *overlapped*
+commands, which an instrument keeps working on after it has taken the next command (the 8714ES
+frequency, points, IF bandwidth, averaging and its single sweep). The bus is busy while it waits,
+so keep the timeout to what the slowest command needs.
 
 ## Channels
 
@@ -168,9 +177,24 @@ a get reads the source.
 
 `unless: {format: [SMIT]}` skips a readout while a control (same channel) has one of those values:
 it isn't polled, and a get is refused with a message, for a query the instrument refuses in that
-mode (8714ES marker value in Smith format).
+mode (8714ES marker value in Smith format). `only: {format: [SMIT]}` is the opposite: the readout
+is read only while the control has one of those values (8714ES marker resistance).
 `parse: list` splits on commas into a list of numbers (a trace). `clear_srq: true` follows the
 query with a serial poll, for an instrument that raises SRQ when asked for its status (3455A `B`).
+
+A trace can be read as a **binary block** (IEEE 488.2 definite length, `#<n><length><bytes>`),
+which is much faster than ASCII for long sweeps:
+
+```yaml
+  trace:
+    query: 'FORM:DATA REAL,32;:FORM:BORD NORM;:TRAC? CH{channel.n}FDATA;:FORM:DATA ASC'
+    block: float32        # float32 | float64 (big-endian) | float32_swapped | float64_swapped
+    parse: list
+```
+
+The server reads until the whole block has arrived (reads end early wherever the data holds the
+EOS byte) and the terminator after it. Setting the data format and setting it back in the same
+message keeps other queries in ASCII.
 
 ## Actions
 
@@ -208,6 +232,8 @@ display:
   kind: network_analyzer
   formatted: trace        # readout, parse: list: one value per point, in the display format
   complex: complex        # readout, parse: list: real, imaginary pairs (Smith and polar)
+  formatted_complex: true # optional: instead of `complex`, the formatted trace has the pairs in
+                          # Smith and polar formats (two values per point)
   start: start            # controls giving the sweep (per channel)
   stop: stop
   points: points
@@ -220,6 +246,10 @@ display:
   marker: marker          # optional marker 1: on/off, frequency, value
   marker_freq: marker_freq
   marker_value: marker_value
+  marker_resistance: marker_resistance   # optional: marker in Smith format (R + jX)
+  marker_reactance: marker_reactance
+  marker_magnitude: marker_magnitude     # optional: marker in polar format
+  marker_phase: marker_phase
 ```
 
 Every name refers to one of the type's own controls or readouts, and the server checks them.
@@ -291,5 +321,6 @@ sim:
     status: {value: 1024, value_on: 1025, when: output}   # value_on while `output` is on
     trace: {sweep: points}                 # a list, one value per point of the `points` control
     complex: {sweep: points, complex: true}   # real, imaginary pairs
+    # trace: {sweep: points, complex_when: {format: [SMIT, POL]}}   pairs while format is one of these
   state: {points: 201, format: MLOG}       # starting values of controls
 ```

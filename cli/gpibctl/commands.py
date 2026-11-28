@@ -132,6 +132,8 @@ def cmd_type_show(ctx, a):
             how = "from " + d["decode"]["readout"]
         elif d.get("unless"):
             how = "not while " + ", ".join("%s %s" % (c, "/".join(map(str, v))) for c, v in d["unless"].items())
+        elif d.get("only"):
+            how = "only while " + ", ".join("%s %s" % (c, "/".join(map(str, v))) for c, v in d["only"].items())
         else:
             how = ""
         kind = d.get("unit", "") or ({"list": "list", "bool": "bool", "text": "text"}.get(d.get("parse"), ""))
@@ -323,15 +325,24 @@ def _trace_lines(ctx, iid, m, key, values):
     disp = m.get("display") or {}
     ch, name = key.split(".", 1) if "." in key else (None, key)
     sweep = None
+    pairs = name == disp.get("complex")
     if disp.get("kind") == "network_analyzer" and name in (disp.get("formatted"), disp.get("complex")):
         dev = ctx.dev(iid)
         k = (lambda n: "%s.%s" % (ch, n) if ch else n)
+
+        def setting(name):   # the server's cached value, or read it when it has none yet
+            v = dev.get_entry(k(disp[name]), fresh=False)["value"]
+            return dev.get_entry(k(disp[name]))["value"] if v is None else v
         try:
-            start, stop = (dev.get_entry(k(disp[x]), fresh=False)["value"] for x in ("start", "stop"))
+            start, stop = setting("start"), setting("stop")
             sweep = (float(start), float(stop))
         except (KeyError, TypeError, ValueError, ServerError):
             sweep = None
-    pairs = name == disp.get("complex")
+        try:   # in Smith and polar formats the formatted trace is real, imaginary pairs too
+            points = int(float(setting("points")))
+            pairs = pairs or (points > 0 and len(values) == 2 * points)
+        except (KeyError, TypeError, ValueError, ServerError):
+            pass
     rows = [values[i:i + 2] for i in range(0, len(values), 2)] if pairs else [[v] for v in values]
     n = len(rows)
     head = (["frequency_hz"] if sweep else ["point"]) + (["real", "imag"] if pairs else ["value"])

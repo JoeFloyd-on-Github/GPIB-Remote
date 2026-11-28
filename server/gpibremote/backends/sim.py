@@ -8,6 +8,7 @@ the older hand-written SCPI state machine, kept for the phase-0 tests.
 import math
 import random
 import re
+import struct
 import threading
 
 from .base import Backend, GpibError, GpibTimeout
@@ -133,18 +134,28 @@ class TypeSimInstrument:
             return self.t.format_value(d, value)
         return str(value)
 
-    def _readout(self, name, ch):
+    def _readout(self, name, ch, binary=True):
         spec = self.sim_readouts.get(name) or {}
         if "sweep" in spec:    # a trace: one value (or a real, imaginary pair) per point
             n = max(2, int(self.state.get((spec["sweep"], ch), 0) or 201))
+            fmt = spec.get("complex_when")      # {control: [values]}: pairs while it has one of them
+            cplx = spec.get("complex") or bool(fmt) and any(
+                str(self.state.get((c, ch), self.state.get((c, None)))).upper() in {str(v).upper() for v in vals}
+                for c, vals in fmt.items())
             out = []
             for i in range(n):
                 x = i / (n - 1)
-                if spec.get("complex"):
+                if cplx:
                     r, th = 0.85 - 0.6 * x, -6 * math.pi * x
                     out += [r * math.cos(th), r * math.sin(th)]
                 else:
                     out.append(-45 + 42 * math.exp(-((x - 0.45) / 0.09) ** 2) + random.uniform(-0.3, 0.3))
+            block = (self.t.readouts.get(name) or {}).get("block")
+            if block and binary:   # binary definite-length block
+                order, code, _ = self.t.BLOCK_FORMATS[block]
+                data = struct.pack("%s%d%s" % (order, len(out), code), *out)
+                return ("#%d%d" % (len(str(len(data))), len(data))).encode("ascii").decode("latin-1") \
+                    + data.decode("latin-1")
             return ",".join("%+.11E" % v for v in out)
         if "follows" in spec:
             on = self.state.get((spec["when"], None), True) if spec.get("when") else True
@@ -164,6 +175,8 @@ class TypeSimInstrument:
         t = self.t
         if t.probe and cmd.upper() == t.probe.upper():
             return self.identity
+        if t.complete_query and cmd.upper() == t.complete_query.upper():
+            return "+1"
         if t.error_query and cmd.upper() == t.error_query.upper():
             if self.errors:
                 return self.errors.pop(0)
@@ -171,9 +184,14 @@ class TypeSimInstrument:
         for name, d in t.readouts.items():
             for ch in (list(t.channels) if d.get("per_channel") else [None]):
                 q = d.get("query")
-                if q and cmd.upper() == t.render(q, ch).upper() and (
-                        "{channel" in q or ch is None or ch == self.channel):
+                if not q or not ("{channel" in q or ch is None or ch == self.channel):
+                    continue
+                if cmd.upper() == t.render(q, ch).upper():
                     return self._readout(name, ch)
+                if d.get("block"):     # the query on its own (older versions of the type) answers in ASCII
+                    inner = next((part for part in t.render(q, ch).split(";") if "?" in part), "").lstrip(":")
+                    if inner and cmd.upper() == inner.upper():
+                        return self._readout(name, ch, binary=False)
         for name, d in t.controls.items():
             g = d.get("get")
             if not g:
@@ -186,6 +204,12 @@ class TypeSimInstrument:
 
     def handle(self, line):
         self.remote = True
+        if ";" in line:     # a readout whose query is a compound command (set the format, read, set it back)
+            resp = self._query(line.strip())
+            if resp is not None:
+                self.log.append(line.strip())
+                self.outq.append(resp)
+                return
         for cmd in line.split(";"):
             cmd = cmd.strip()
             if not cmd:

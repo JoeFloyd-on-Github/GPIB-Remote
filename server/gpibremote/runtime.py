@@ -221,15 +221,21 @@ class InstanceRuntime:
         if ready:
             await self._ensure_ready()
         raw = [(k, c if k == "e" else None if c is None else self._enc(c)) for k, c in steps]
+        if timeout is None:     # a step that waits for the instrument to finish gets the longer timeout
+            timeout = max(self.t.timeout, self.t.complete_timeout) if ("q", self.t.complete_query) in steps \
+                else self.t.timeout
         try:
-            out = await self.bus.call("transaction", self.pad, self.sad, raw,
-                                      self.t.timeout if timeout is None else timeout, self.t.delay)
+            out = await self.bus.call("transaction", self.pad, self.sad, raw, timeout, self.t.delay)
         except Exception as exc:
             self._set_online(False, str(exc))
             raise
         self._last_ok = time.monotonic()
         self._set_online(True)
-        return [b.decode("latin-1").strip() for b in out]
+        kinds = [k for k, _ in steps if k in ("q", "r", "e", "b")]
+        return [b if k == "b" else b.decode("latin-1").strip() for k, b in zip(kinds, out)]
+
+    def _wait_step(self):
+        return ("q", self.t.complete_query)
 
     async def check_presence(self):
         """Serial poll: answers when the instrument is on, without putting it in remote."""
@@ -283,7 +289,7 @@ class InstanceRuntime:
                 src = d["decode"]["readout"]
                 await self.get("%s.%s" % (ch, src) if ch else src)
             return self.cache.get(key) or {"value": None, "t": None, "source": "unknown"}
-        if section == "readouts" and fresh and d.get("unless"):
+        if section == "readouts" and fresh and (d.get("unless") or d.get("only")):
             why = self._unavailable(key)
             if why:
                 raise ValueRejected(why)
@@ -306,13 +312,15 @@ class InstanceRuntime:
         steps, cmd = self._item_steps(template, d, ch)
         if section == "readouts" and d.get("trigger") == "get":
             steps += [("t", None), ("w", cmd), ("r", None)]
+        elif section == "readouts" and d.get("block"):      # binary trace
+            steps.append(("b", cmd))
         else:
             steps.append(("q", cmd))
         if section == "readouts" and d.get("clear_srq"):
             steps.append(("p", None))   # the query raises SRQ (e.g. 3455A "B"); a serial poll clears it
         resp = (await self._transact(steps))[-1]
         try:
-            value = self.t.parse(d, resp)
+            value = self.t.parse_block(d, resp) if isinstance(resp, bytes) else self.t.parse(d, resp)
         except ValueError as exc:
             raise DeviceError("bad_response", str(exc))
         if section == "readouts":
@@ -375,6 +383,8 @@ class InstanceRuntime:
         # Empty the error queue first, so errors left by earlier commands (a poll the instrument
         # refused in its present mode, say) aren't blamed on this set.
         steps = ([self._drain_step()] if check else []) + steps + [("w", cmd)]
+        if d.get("wait"):   # an overlapped command: let it finish before reading back
+            steps.append(self._wait_step())
         if d.get("get"):
             gsteps, gcmd = self._item_steps(d["get"], d, ch)
             steps.append(("q", gcmd))
@@ -422,11 +432,15 @@ class InstanceRuntime:
         """Why a readout can't be read in the present settings (its `unless`), or None."""
         ch, name = self.t.split_key(key)
         d = self.t.readouts.get(name) or {}
-        for cname, values in (d.get("unless") or {}).items():
-            ckey = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
-            cur = (self.cache.get(ckey) or {}).get("value")
-            if cur is not None and str(cur).upper() in {str(v).upper() for v in values}:
-                return "%s isn't available while %s is %s" % (key, cname, cur)
+        for cond in ("unless", "only"):
+            for cname, values in (d.get(cond) or {}).items():
+                ckey = "%s.%s" % (ch, cname) if ch and self.t.item_per_channel(cname) else cname
+                cur = (self.cache.get(ckey) or {}).get("value")
+                if cur is None:
+                    continue
+                listed = str(cur).upper() in {str(v).upper() for v in values}
+                if listed == (cond == "unless"):
+                    return "%s isn't available while %s is %s" % (key, cname, cur)
         return None
 
     async def action(self, name, session, channel=None):
@@ -440,6 +454,8 @@ class InstanceRuntime:
         if channel is not None and not any("{channel" in c for c in a["send"]):
             steps.append(("w", self.t.select_cmd(channel)))
         steps += [("w", self.t.render(c, channel)) for c in a["send"]]
+        if a.get("wait"):   # e.g. a single sweep: answer once it has finished
+            steps.append(self._wait_step())
         audit.info("%s action %s %s%s", session, self.id, name, " " + channel if channel else "")
         await self._transact(steps)
         if a.get("resets"):     # back to power-on settings: nothing left to restore

@@ -6,6 +6,7 @@ instrument responses into values. It does no I/O.
 
 import hashlib
 import re
+import struct
 
 import yaml
 
@@ -90,6 +91,9 @@ class DeviceType:
         self.error_none = errs.get("none")
         self.check_errors = bool(errs.get("check_after_set", False))
         self.error_codes = {int(k): str(v) for k, v in (errs.get("codes") or {}).items()}
+        comp = raw.get("complete") or {}
+        self.complete_query = comp.get("query")           # e.g. *OPC?: answers once commands finish
+        self.complete_timeout = parse_seconds(comp.get("timeout"), 30.0)
         ch = raw.get("channels") or {}
         self.channel_select = ch.get("select")
         self.channels = dict(ch.get("list") or {})
@@ -310,6 +314,16 @@ class DeviceType:
                     return name
             raise ValueError("unknown enum response %r" % text)
         return text
+
+    BLOCK_FORMATS = {"float32": (">", "f", 4), "float64": (">", "d", 8),
+                     "float32_swapped": ("<", "f", 4), "float64_swapped": ("<", "d", 8)}
+
+    def parse_block(self, d, data):
+        """The data bytes of a binary block (IEEE 488.2 definite length) -> list of numbers."""
+        order, code, size = self.BLOCK_FORMATS[d["block"]]
+        if len(data) % size:
+            raise ValueError("block of %d bytes isn't a whole number of %d-byte values" % (len(data), size))
+        return [float(v) for v in struct.unpack("%s%d%s" % (order, len(data) // size, code), data)]
 
     def describe(self):
         """The model sent to clients (everything needed to render menus and panels)."""
@@ -575,12 +589,17 @@ def _check_display(e, raw):
         e.append("display.kind: network_analyzer (the only kind so far)")
         return
     controls, readouts = raw.get("controls") or {}, raw.get("readouts") or {}
-    need = {"formatted": readouts, "complex": readouts, "start": controls, "stop": controls,
-            "points": controls, "format": controls}
+    need = {"formatted": readouts, "start": controls, "stop": controls, "points": controls, "format": controls}
+    if not disp.get("formatted_complex"):
+        need["complex"] = readouts      # else the formatted trace has the pairs (8714ES)
+    if "formatted_complex" in disp and not isinstance(disp["formatted_complex"], bool):
+        e.append("display.formatted_complex: true or false")
     optional = {"enabled": controls, "scale": controls, "ref_level": controls, "ref_position": controls,
                 "measurement": controls, "marker": controls, "marker_freq": controls,
-                "marker_value": readouts}
-    for k in set(disp) - set(need) - set(optional) - {"kind"}:
+                "marker_value": readouts, "marker_resistance": readouts, "marker_reactance": readouts,
+                "marker_magnitude": readouts, "marker_phase": readouts}
+    optional.setdefault("complex", readouts)
+    for k in set(disp) - set(need) - set(optional) - {"kind", "formatted_complex"}:
         e.append("display.%s: unknown key" % k)
     for k, sec in list(need.items()) + list(optional.items()):
         if k not in disp:
@@ -610,7 +629,8 @@ def validate(raw):
         e.append("version: required, quoted semantic version like '1.0.0'")
     known = {"schema", "type", "version", "title", "manufacturer", "model", "description", "verified",
              "connection", "identify", "errors", "init", "channels", "controls", "readouts", "actions",
-             "safe_off", "menu", "panel", "sim", "notes", "references", "roles", "restore", "display"}
+             "safe_off", "menu", "panel", "sim", "notes", "references", "roles", "restore", "display",
+             "complete"}
     for k in raw:
         if k not in known:
             e.append("%s: unknown top-level key" % k)
@@ -628,6 +648,23 @@ def validate(raw):
             parse_seconds(conn.get(k))
         except ValueError as exc:
             e.append("connection.%s: %s" % (k, exc))
+
+    comp = raw.get("complete")
+    if comp is not None:
+        if not isinstance(comp, dict) or not isinstance(comp.get("query"), str) or set(comp) - {"query", "timeout"}:
+            e.append("complete: a mapping {query: '*OPC?', timeout: 30s}")
+        else:
+            try:
+                parse_seconds(comp.get("timeout"))
+            except ValueError as exc:
+                e.append("complete.timeout: %s" % exc)
+    for section in ("controls", "actions"):
+        for name, d in ((raw.get(section) or {}) if isinstance(raw.get(section), dict) else {}).items():
+            if isinstance(d, dict) and "wait" in d:
+                if not isinstance(d["wait"], bool):
+                    e.append("%s.%s.wait: true or false" % (section, name))
+                elif d["wait"] and not isinstance(comp, dict):
+                    e.append("%s.%s.wait: needs a top-level complete query" % (section, name))
 
     errs = raw.get("errors") or {}
     codes = errs.get("codes") if isinstance(errs, dict) else None
@@ -730,27 +767,34 @@ def validate(raw):
                     _check_template(e, p + ".query", d["query"], allowed)
                 if "clear_srq" in d and not isinstance(d["clear_srq"], bool):
                     e.append("%s.clear_srq: true or false" % p)
-                if "unless" in d:
-                    un = d["unless"]
+                for cond in ("unless", "only"):
+                    if cond not in d:
+                        continue
+                    un = d[cond]
                     ctrls = raw.get("controls") or {}
                     if not isinstance(un, dict) or not un:
-                        e.append("%s.unless: a mapping {control: [values]}" % p)
+                        e.append("%s.%s: a mapping {control: [values]}" % (p, cond))
                     else:
                         for cname, values in un.items():
                             c = ctrls.get(cname)
                             if not isinstance(c, dict):
-                                e.append("%s.unless: unknown control %r" % (p, cname))
+                                e.append("%s.%s: unknown control %r" % (p, cond, cname))
                                 continue
                             if c.get("per_channel") and not per:
-                                e.append("%s.unless.%s: a per-channel control needs a per-channel readout" % (p, cname))
+                                e.append("%s.%s.%s: a per-channel control needs a per-channel readout" % (p, cond, cname))
                             if not isinstance(values, list) or not values:
-                                e.append("%s.unless.%s: a non-empty list of values" % (p, cname))
+                                e.append("%s.%s.%s: a non-empty list of values" % (p, cond, cname))
                                 continue
                             if c.get("kind") == "enum":
                                 opts = {str(o).upper() for o in (c.get("options") or {})}
                                 for v in values:
                                     if str(v).upper() not in opts:
-                                        e.append("%s.unless.%s: %r is not an option" % (p, cname, v))
+                                        e.append("%s.%s.%s: %r is not an option" % (p, cond, cname, v))
+                if "block" in d:
+                    if d["block"] not in DeviceType.BLOCK_FORMATS:
+                        e.append("%s.block: one of %s" % (p, ", ".join(DeviceType.BLOCK_FORMATS)))
+                    if d.get("parse") != "list" or not d.get("query"):
+                        e.append("%s.block: needs a query and parse: list" % p)
                 if d.get("trigger") not in (None, "get"):
                     e.append("%s.trigger: only 'get' is supported" % p)
                 try:

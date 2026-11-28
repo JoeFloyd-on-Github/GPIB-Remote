@@ -14,6 +14,7 @@ const FORMATS = {
   SWR: { label: "SWR", unit: "" },
   REAL: { label: "Real", unit: "" },
   IMAG: { label: "Imaginary", unit: "" },
+  MIMP: { label: "Impedance mag", unit: "\u03a9" },
   SMIT: { label: "Smith chart", unit: "", complex: true },
   POL: { label: "Polar", unit: "", complex: true },
 };
@@ -83,6 +84,14 @@ export class AnalyzerDisplay {
   }
   fmt(ch) { return String(this.val(this.d.format, ch) || "MLOG").toUpperCase(); }
   isComplex(ch) { return !!(FORMATS[this.fmt(ch)] || {}).complex; }
+  // Whether a formatted trace holds real, imaginary pairs: on analyzers whose formatted trace is
+  // the complex data in Smith and polar formats (display.formatted_complex), two values per point.
+  formattedPairs(ch, values) {
+    if (!this.d.formatted_complex) return false;
+    const pts = Number(this.val(this.d.points, ch));
+    return pts > 0 ? values.length === 2 * pts : this.isComplex(ch);
+  }
+  traceName(ch) { return this.isComplex(ch) && !this.d.formatted_complex ? this.d.complex : this.d.formatted; }
   enabled(ch) { return !this.d.enabled || this.val(this.d.enabled, ch) !== false; }
   slot(ch) { return Math.min(8, this.channels.indexOf(ch) + 1); }
   chLabel(ch) { return ch ? ((this.view.model.channels[ch] || {}).label || ch) : ""; }
@@ -91,8 +100,8 @@ export class AnalyzerDisplay {
   onEvent(key, entry) {
     for (const ch of this.channels) {
       for (const [name, complex] of [[this.d.formatted, false], [this.d.complex, true]]) {
-        if (key === this.key(name, ch) && Array.isArray(entry.value)) {
-          this.data.set(ch, { complex, values: entry.value, t: entry.t,
+        if (name && key === this.key(name, ch) && Array.isArray(entry.value)) {
+          this.data.set(ch, { complex: complex || this.formattedPairs(ch, entry.value), values: entry.value, t: entry.t,
             start: this.val(this.d.start, ch), stop: this.val(this.d.stop, ch) });
           this.redraw();
           return;
@@ -120,7 +129,7 @@ export class AnalyzerDisplay {
   async readOnce() {
     for (const ch of this.channels) {
       if (!this.enabled(ch) || this.dead) continue;
-      const name = this.isComplex(ch) ? this.d.complex : this.d.formatted;
+      const name = this.traceName(ch);
       const t0 = performance.now();
       try {
         const e = await this.view.client.request("dev.get", { instance: this.view.id, key: this.key(name, ch) });
@@ -193,8 +202,16 @@ export class AnalyzerDisplay {
     p.title.textContent = [this.chLabel(ch), meas, F.label].filter(Boolean).join("  ·  ");
     p.canvas.setAttribute("aria-label", p.title.textContent + " sweep");
     const mf = this.val(this.d.marker_freq, ch), mv = this.val(this.d.marker_value, ch);
+    let mtext = mv != null && !F.complex ? valText(mv, F.unit) : "";
+    if (fmt === "SMIT") {           // the analyzer reads the marker as R + jX in Smith format
+      const r = this.val(this.d.marker_resistance, ch), x = this.val(this.d.marker_reactance, ch);
+      if (r != null && x != null) mtext = valText(r, "") + (x < 0 ? " \u2212 j" : " + j") + valText(Math.abs(x), "\u03a9");
+    } else if (fmt === "POL") {     // and as magnitude and phase in polar format
+      const m = this.val(this.d.marker_magnitude, ch), ph = this.val(this.d.marker_phase, ch);
+      if (m != null && ph != null) mtext = valText(m, "") + " \u2220 " + valText(ph, "\u00b0");
+    }
     p.mk.textContent = this.d.marker && this.val(this.d.marker, ch) === false ? "" :
-      (mf != null ? "Marker 1: " + hz(mf) + (mv != null && !F.complex ? "   " + valText(mv, F.unit) : "") : "");
+      (mf != null ? "Marker 1: " + hz(mf) + (mtext ? "   " + mtext : "") : "");
 
     const c = p.canvas, dpr = window.devicePixelRatio || 1;
     const W = c.clientWidth, H = c.clientHeight;
@@ -208,7 +225,8 @@ export class AnalyzerDisplay {
     const css = getComputedStyle(c);
     const col = (n) => css.getPropertyValue(n).trim();
     g.font = "12px " + css.fontFamily;
-    const ctx = { g, col, W, H, ch, F, p, series: col("--series-" + this.slot(ch)) };
+    const ctx = { g, col, W, H, ch, F, p, series: col("--series-" + this.slot(ch)),
+      markerRead: !!(F.complex && mtext) };    // the analyzer's own marker reading, else worked out from the trace
 
     const data = this.data.get(ch);
     const wantComplex = !!F.complex;
@@ -338,7 +356,7 @@ export class AnalyzerDisplay {
     g.stroke();
     g.restore();
     if (ctx.mi != null) this.markerAt(ctx, X(v[2 * ctx.mi]), Y(v[2 * ctx.mi + 1]));
-    if (ctx.mi != null) p.mk.textContent = "Marker 1: " + hz(ctx.freq(ctx.mi)) + "   " + this.gammaText(v[2 * ctx.mi], v[2 * ctx.mi + 1], smith)[0];
+    if (ctx.mi != null && !ctx.markerRead) p.mk.textContent = "Marker 1: " + hz(ctx.freq(ctx.mi)) + "   " + this.gammaText(v[2 * ctx.mi], v[2 * ctx.mi + 1], smith)[0];
 
     const hv = this.hover.get(ch);
     if (hv && n) {

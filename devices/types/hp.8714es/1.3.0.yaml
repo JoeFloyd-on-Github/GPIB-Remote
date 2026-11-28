@@ -1,0 +1,443 @@
+schema: 1
+type: hp.8714es
+version: '1.3.0'
+title: HP 8714ES RF Network Analyzer
+manufacturer: Hewlett-Packard
+model: 8714ES
+verified: false         # checked on the bench unit (E.06.02); see docs/devices/hp-8714es
+description: >
+  300 kHz - 3 GHz S-parameter network analyzer with two measurement channels. Settings are read
+  back from the analyzer. Whole sweeps are read as binary traces (real, imaginary pairs in Smith
+  and polar formats) and drawn by the web client as the analyzer's screen.
+references:
+  - Agilent 8712ET/ES and 8714ET/ES Programmer's Guide, 08714-90015, June 2000 (docs/devices/hp-8714es/manuals)
+notes: >
+  Smith chart format is refused on a transmission measurement (S21, S12): error -221, "Smith Chart
+  format is only valid when measuring Reflection"; polar works on both. The analyzer keeps a format
+  for reflection and one for transmission, and changing the measurement brings back the one for
+  its kind, so change the measurement first. The marker value query (CALC:MARK:Y?) is refused in
+  Smith format; the marker then reads as resistance and reactance, and in polar format as magnitude
+  and phase. Most settings are overlapped commands (they finish after the next command starts), so
+  the server waits for *OPC? after them before reading them back. Traces are read in binary
+  (FORM:DATA REAL,32), about 15 times faster than ASCII, and the format is set back to ASCII in the
+  same message.
+
+connection:
+  eos: "\n"
+  write_termination: "\n"
+  timeout: 5s
+
+identify:
+  probe: '*IDN?'        # the bench unit answers in quotes: "HEWLETT-PACKARD,8714ES,US39230371,E.06.02"
+  match: '^"?HEWLETT-PACKARD,8714ES,'
+
+complete:                # overlapped commands (Programmer's Guide ch. 2): *OPC? answers once they finish
+  query: '*OPC?'
+  timeout: 30s
+
+errors:
+  query: 'SYST:ERR?'
+  none: '^\+?0,'
+  check_after_set: true
+
+# Every command names its channel (SENS{channel.n} -> SENS1, SENS2), so there is no
+# channel-select command and the front-panel active channel is left alone.
+channels:
+  list:
+    CH1: {label: 'Channel 1', n: 1}
+    CH2: {label: 'Channel 2', n: 2}
+
+controls:
+  rf_output:
+    wait: true
+    kind: bool
+    label: RF output
+    description: Source power on or off at the ports.
+    set: 'OUTP {value}'
+    get: 'OUTP?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  continuous:
+    wait: true
+    kind: bool
+    label: Continuous sweep
+    description: Off holds the display; a single sweep then runs only on request.
+    set: 'INIT1:CONT {value}'
+    get: 'INIT1:CONT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  enabled:
+    wait: true
+    kind: bool
+    per_channel: true
+    label: Channel on
+    set: 'SENS{channel.n}:STAT {value}'
+    get: 'SENS{channel.n}:STAT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  measurement:
+    wait: true
+    kind: enum
+    per_channel: true
+    label: Measurement
+    set: 'SENS{channel.n}:FUNC {value}'
+    get: 'SENS{channel.n}:FUNC?'
+    rereads: [format, marker_value]   # the analyzer brings back the format last used for this measurement
+    options:
+      S11: {label: 'S11 (reflection, port 1)', token: '"XFR:S 1,1"'}
+      S21: {label: 'S21 (transmission, 1 to 2)', token: '"XFR:S 2,1"'}
+      S12: {label: 'S12 (transmission, 2 to 1)', token: '"XFR:S 1,2"'}
+      S22: {label: 'S22 (reflection, port 2)', token: '"XFR:S 2,2"'}
+  format:
+    kind: enum
+    per_channel: true
+    label: Format
+    set: 'CALC{channel.n}:FORM {value}'
+    get: 'CALC{channel.n}:FORM?'
+    rereads: [marker_value]
+    options:
+      MLOG: {label: Log magnitude (dB)}
+      MLIN: {label: Linear magnitude}
+      PHAS: {label: Phase}
+      GDEL: {label: Group delay}
+      SWR:  {label: SWR}
+      SMIT: {label: Smith chart}
+      POL:  {label: Polar}
+      REAL: {label: Real}
+      IMAG: {label: Imaginary}
+      MIMP: {label: Impedance magnitude}
+  start:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Start frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:STAR {value}'
+    get: 'SENS{channel.n}:FREQ:STAR?'
+  stop:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Stop frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:STOP {value}'
+    get: 'SENS{channel.n}:FREQ:STOP?'
+  center:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Center frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'SENS{channel.n}:FREQ:CENT {value}'
+    get: 'SENS{channel.n}:FREQ:CENT?'
+  span:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Span
+    unit: Hz
+    resolution: 1
+    min: 0
+    max: 2999700000
+    set: 'SENS{channel.n}:FREQ:SPAN {value}'
+    get: 'SENS{channel.n}:FREQ:SPAN?'
+  power:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Source power
+    unit: dBm
+    resolution: 0.1
+    min: -60
+    max: 16
+    set: 'SOUR{channel.n}:POW {value}'
+    get: 'SOUR{channel.n}:POW?'
+  points:
+    wait: true
+    kind: enum
+    per_channel: true
+    label: Points per sweep
+    set: 'SENS{channel.n}:SWE:POIN {value}'
+    get: 'SENS{channel.n}:SWE:POIN?'      # answers e.g. +1601
+    options:
+      '3':    {match: '^\+?3$'}
+      '5':    {match: '^\+?5$'}
+      '11':   {match: '^\+?11$'}
+      '21':   {match: '^\+?21$'}
+      '51':   {match: '^\+?51$'}
+      '101':  {match: '^\+?101$'}
+      '201':  {match: '^\+?201$'}
+      '401':  {match: '^\+?401$'}
+      '801':  {match: '^\+?801$'}
+      '1601': {match: '^\+?1601$'}
+  if_bandwidth:
+    wait: true
+    kind: enum
+    per_channel: true
+    label: IF bandwidth
+    description: Narrower is quieter and slower.
+    set: 'SENS{channel.n}:BWID {value}'
+    get: 'SENS{channel.n}:BWID?'          # answers e.g. 1200.000000
+    options:
+      '15':   {label: '15 Hz (fine)', match: '^\+?15(\.0*)?$'}
+      '250':  {label: '250 Hz (narrow)', match: '^\+?250(\.0*)?$'}
+      '1200': {label: '1200 Hz (medium narrow)', match: '^\+?1200(\.0*)?$'}
+      '3700': {label: '3700 Hz (medium)', match: '^\+?3700(\.0*)?$'}
+      '4000': {label: '4000 Hz (medium wide)', match: '^\+?4000(\.0*)?$'}
+      '6500': {label: '6500 Hz (wide)', match: '^\+?6500(\.0*)?$'}
+  averaging:
+    wait: true
+    kind: bool
+    per_channel: true
+    label: Averaging
+    set: 'SENS{channel.n}:AVER {value}'
+    get: 'SENS{channel.n}:AVER?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  average_count:
+    wait: true
+    kind: number
+    per_channel: true
+    label: Averaging factor
+    min: 1
+    max: 64
+    format: '%d'
+    set: 'SENS{channel.n}:AVER:COUN {value}'
+    get: 'SENS{channel.n}:AVER:COUN?'
+  correction:
+    wait: true
+    kind: bool
+    per_channel: true
+    label: Calibration correction
+    set: 'SENS{channel.n}:CORR:STAT {value}'
+    get: 'SENS{channel.n}:CORR:STAT?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  scale:
+    kind: number
+    per_channel: true
+    label: Scale per division
+    set: 'DISP:WIND{channel.n}:TRAC:Y:PDIV {value}'
+    get: 'DISP:WIND{channel.n}:TRAC:Y:PDIV?'
+  ref_level:
+    kind: number
+    per_channel: true
+    label: Reference level
+    set: 'DISP:WIND{channel.n}:TRAC:Y:RLEV {value}'
+    get: 'DISP:WIND{channel.n}:TRAC:Y:RLEV?'
+  ref_position:
+    kind: number
+    per_channel: true
+    label: Reference position
+    description: Graticule division of the reference line, 0 (bottom) to 10 (top).
+    min: 0
+    max: 10
+    set: 'DISP:WIND{channel.n}:TRAC:Y:RPOS {value}'
+    get: 'DISP:WIND{channel.n}:TRAC:Y:RPOS?'
+  marker:
+    kind: bool
+    per_channel: true
+    label: Marker 1
+    set: 'CALC{channel.n}:MARK1 {value}'
+    get: 'CALC{channel.n}:MARK1?'
+    values: {'on': 'ON', 'off': 'OFF'}
+  marker_freq:
+    kind: number
+    per_channel: true
+    label: Marker 1 frequency
+    unit: Hz
+    resolution: 1
+    min: 300000
+    max: 3000000000
+    set: 'CALC{channel.n}:MARK1:X {value}'
+    get: 'CALC{channel.n}:MARK1:X?'
+
+readouts:
+  marker_value:
+    per_channel: true
+    label: Marker 1 value
+    description: In the channel's format (dB for log magnitude, degrees for phase, ...).
+    query: 'CALC{channel.n}:MARK1:Y?'
+    unless: {format: [SMIT]}   # refused in Smith chart format (error -221)
+    poll: 2s
+  marker_resistance:
+    per_channel: true
+    label: Marker 1 resistance
+    unit: ohm
+    query: 'CALC{channel.n}:MARK1:Y:RES?'
+    only: {format: [SMIT]}
+    poll: 2s
+  marker_reactance:
+    per_channel: true
+    label: Marker 1 reactance
+    unit: ohm
+    query: 'CALC{channel.n}:MARK1:Y:REAC?'
+    only: {format: [SMIT]}
+    poll: 2s
+  marker_inductance:
+    per_channel: true
+    label: Marker 1 inductance
+    unit: H
+    query: 'CALC{channel.n}:MARK1:Y:IND?'
+    only: {format: [SMIT]}
+  marker_magnitude:
+    per_channel: true
+    label: Marker 1 magnitude
+    query: 'CALC{channel.n}:MARK1:Y:MAGN?'
+    only: {format: [POL]}
+    poll: 2s
+  marker_phase:
+    per_channel: true
+    label: Marker 1 phase
+    unit: deg
+    query: 'CALC{channel.n}:MARK1:Y:PHAS?'
+    only: {format: [POL]}
+    poll: 2s
+  trace:
+    per_channel: true
+    label: Trace (formatted)
+    description: >
+      The displayed data, after trace math and electrical delay: one value per point in the
+      channel's format (dB, degrees, SWR ...), or real, imaginary pairs in Smith and polar formats.
+      About 0.1 s for 1601 points.
+    query: 'FORM:DATA REAL,32;:FORM:BORD NORM;:TRAC? CH{channel.n}FDATA;:FORM:DATA ASC'
+    block: float32
+    parse: list
+  complex:
+    per_channel: true
+    label: Trace (corrected data)
+    description: >
+      Corrected data as real, imaginary pairs, before trace math, electrical delay and formatting.
+    query: 'FORM:DATA REAL,32;:FORM:BORD NORM;:TRAC? CH{channel.n}SDATA;:FORM:DATA ASC'
+    block: float32
+    parse: list
+  sweep_time:
+    per_channel: true
+    label: Sweep time
+    unit: s
+    query: 'SENS{channel.n}:SWE:TIME?'
+  measuring:
+    label: Measuring (channels)
+    description: Channels taking data now (STAT:OPER:MEAS:COND?).
+    query: 'STAT:OPER:MEAS:COND?'
+    parse: int
+  measuring_bits:
+    label: Measuring
+    parse: text
+    decode: {readout: measuring, bits: {1: CH1, 2: CH2}, none: none}
+  averaged:
+    label: Averaging complete (channels)
+    description: Channels whose sweeps since the last averaging restart have reached the averaging factor.
+    query: 'STAT:OPER:AVER:COND?'
+    parse: int
+  averaged_bits:
+    label: Averaging complete
+    parse: text
+    decode: {readout: averaged, bits: {1: CH1, 2: CH2}, none: none}
+  questionable:
+    label: Questionable status
+    description: Bit 9 a limit test failed, bit 10 the data is out of date (a setting changed since the sweep).
+    query: 'STAT:QUES:COND?'
+    parse: int
+    poll: 5s
+  questionable_bits:
+    label: Data quality
+    parse: text
+    decode: {readout: questionable, bits: {512: LIMIT_FAIL, 1024: DATA_QUESTIONABLE}, none: ok}
+  limit_fail:
+    label: Limit test failures
+    query: 'STAT:QUES:LIM:COND?'
+    parse: int
+  limit_fail_bits:
+    label: Limit test failed
+    parse: text
+    decode: {readout: limit_fail, bits: {1: CH1, 2: CH2, 4: CH1_MARKER, 8: CH2_MARKER}, none: none}
+
+actions:
+  single_sweep:
+    label: Single sweep
+    description: Holds the sweep and takes one, answering once it has finished.
+    send: ['ABOR', 'INIT1:CONT OFF', 'INIT1']
+    wait: true
+    assumes: {continuous: false}
+  autoscale:
+    per_channel: true
+    label: Autoscale
+    send: ['DISP:WIND{channel.n}:TRAC:Y:AUTO ONCE']
+    refresh: true
+  marker_to_max:
+    per_channel: true
+    label: Marker to maximum
+    send: ['CALC{channel.n}:MARK1:MAX']
+    refresh: true
+  marker_to_min:
+    per_channel: true
+    label: Marker to minimum
+    send: ['CALC{channel.n}:MARK1:MIN']
+    refresh: true
+  preset:
+    label: Preset
+    description: SYST:PRES. Every setting to its preset value; calibrations are kept in memory.
+    send: ['SYST:PRES']
+    confirm: true
+    refresh: true
+  clear_status:
+    label: Clear status and errors
+    send: ['*CLS']
+
+safe_off: ['OUTP OFF']
+
+display:                 # drawn by the web client as the analyzer's screen
+  kind: network_analyzer
+  formatted: trace
+  formatted_complex: true   # in Smith and polar formats the formatted trace is real, imaginary pairs
+  start: start
+  stop: stop
+  points: points
+  format: format
+  enabled: enabled
+  measurement: measurement
+  scale: scale
+  ref_level: ref_level
+  ref_position: ref_position
+  marker: marker
+  marker_freq: marker_freq
+  marker_value: marker_value
+  marker_resistance: marker_resistance
+  marker_reactance: marker_reactance
+  marker_magnitude: marker_magnitude
+  marker_phase: marker_phase
+
+menu:
+  - Sweep: [continuous, single_sweep, rf_output]
+  - '{channel}': [enabled, measurement, format, start, stop, center, span, power, points,
+                          if_bandwidth, averaging, average_count, correction, scale, ref_level,
+                          ref_position, autoscale, sweep_time]
+  - 'Marker {channel}': [marker, marker_freq, marker_value, marker_resistance, marker_reactance,
+                          marker_inductance, marker_magnitude, marker_phase, marker_to_max, marker_to_min]
+  - Status: [measuring_bits, averaged_bits, questionable_bits, limit_fail_bits]
+  - System: [preset, clear_status]
+
+sim:
+  identity: '"HEWLETT-PACKARD,8714ES,US39230371,E.06.02"'
+  state: {enabled: true, start: 300000, stop: 3000000000, center: 1500150000, span: 2999700000,
+          points: '201', scale: 10, ref_position: 5, marker: true, marker_freq: 1350000000,
+          measurement: S21, format: MLOG, if_bandwidth: '1200', average_count: 16}
+  readouts:
+    marker_value: {value: -3.21, noise: 0.01}
+    marker_resistance: {value: 48.7, noise: 0.05}
+    marker_reactance: {value: -3.4, noise: 0.05}
+    marker_inductance: {value: 0.0}
+    marker_magnitude: {value: 0.42, noise: 0.002}
+    marker_phase: {value: -63.0, noise: 0.1}
+    measuring: {value: 1}
+    averaged: {value: 0}
+    questionable: {value: 0}
+    limit_fail: {value: 0}
+    sweep_time: {value: 2.316}
+    trace: {sweep: points, complex_when: {format: [SMIT, POL]}}   # a simulated filter response
+    complex: {sweep: points, complex: true}

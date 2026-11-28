@@ -175,6 +175,41 @@ class Phase4(unittest.TestCase):
         self.a.request("dev.set", instance="vna", key="CH1.format", value="POL")
         self.assertIsNotNone(self.a.request("dev.get", instance="vna", key="CH1.marker_value")["value"])
 
+    def test_8714es_1_3_binary_traces_waits_and_smith_markers(self):
+        self.a.request("instances.create", instance={"id": "vna", "type": "hp.8714es@1.3.0", "address": {"pad": 16}})
+        sim = self.stack.sim(16)
+        # Traces come as binary blocks, with the data format set back to ASCII in the same message.
+        r = self.a.request("dev.get", instance="vna", key="CH1.trace")
+        self.assertEqual(len(r["value"]), 201)
+        self.assertIn("FORM:DATA REAL,32;:FORM:BORD NORM;:TRAC? CH1FDATA;:FORM:DATA ASC", sim.log)
+        # Overlapped settings wait for *OPC? before they are read back.
+        n = len(sim.log)
+        r = self.a.request("dev.set", instance="vna", key="CH1.points", value="51")
+        self.assertEqual((r["value"], r["source"]), ("51", "read"))
+        log = sim.log[n:]
+        self.assertLess(log.index("SENS1:SWE:POIN 51"), log.index("*OPC?"))
+        self.assertLess(log.index("*OPC?"), log.index("SENS1:SWE:POIN?"))
+        r = self.a.request("dev.set", instance="vna", key="CH1.if_bandwidth", value="250")
+        self.assertEqual(r["value"], "250")
+        with self.assertRaises(Exception):
+            self.a.request("dev.set", instance="vna", key="CH1.if_bandwidth", value="300")
+        # Smith format: the formatted trace has real, imaginary pairs; the marker reads as R + jX.
+        self.a.request("dev.set", instance="vna", key="CH1.measurement", value="S11")
+        self.a.request("dev.set", instance="vna", key="CH1.format", value="SMIT")
+        self.assertEqual(len(self.a.request("dev.get", instance="vna", key="CH1.trace")["value"]), 102)
+        self.assertIsNotNone(self.a.request("dev.get", instance="vna", key="CH1.marker_resistance")["value"])
+        with self.assertRaises(Exception) as cm:
+            self.a.request("dev.get", instance="vna", key="CH1.marker_magnitude")
+        self.assertIn("while format is SMIT", str(cm.exception))
+        # A single sweep holds the sweep and answers once it has finished.
+        n = len(sim.log)
+        self.a.request("dev.action", instance="vna", action="single_sweep")
+        self.assertEqual(sim.log[n:], ["ABOR", "INIT1:CONT OFF", "INIT1", "*OPC?"])
+        self.assertIs(self.a.request("dev.get", instance="vna", key="continuous", fresh=False)["value"], False)
+        # Status registers decoded by bit.
+        self.assertEqual(self.a.request("dev.get", instance="vna", key="measuring_bits")["value"], "CH1")
+        self.assertEqual(self.a.request("dev.get", instance="vna", key="questionable_bits")["value"], "ok")
+
 
 class Supply6632A(unittest.TestCase):
     """hp.6632a 1.4.0: status register decoded bit by bit (manual Table 6-4)."""
@@ -240,7 +275,7 @@ class Phase4Types(unittest.TestCase):
 
     def test_new_types_valid(self):
         for t, v in (("hp.3455a", "1.0.0"), ("hp.3456a", "1.0.0"), ("hp.8714es", "1.1.0"),
-                     ("hp.8714es", "1.2.0"), ("hp.6632a", "1.4.0")):
+                     ("hp.8714es", "1.2.0"), ("hp.8714es", "1.3.0"), ("hp.6632a", "1.4.0")):
             self.assertEqual(validate(self.raw(t, v)), [], t)
 
     def bad(self, raw, msg):
@@ -300,6 +335,43 @@ class Phase4Types(unittest.TestCase):
         r = copy.deepcopy(raw)
         r["display"]["kind"] = "oscilloscope"
         self.bad(r, "display.kind")
+
+
+class BlockRead(unittest.TestCase):
+    """Binary definite-length blocks read through reads that stop at every EOS byte."""
+
+    def backend(self, payload):
+        from gpibremote.backends.base import Backend, GpibTimeout
+
+        class Chunky(Backend):
+            name = "chunky"
+
+            def __init__(self):
+                super().__init__(0)
+                self.buf = payload
+
+            def read(self, pad, sad, max_bytes=1 << 20, timeout=3.0):
+                if not self.buf:
+                    raise GpibTimeout("timeout")
+                i = self.buf.find(b"\n")
+                cut = len(self.buf) if i < 0 else i + 1
+                out, self.buf = self.buf[:cut], self.buf[cut:]
+                return out
+        return Chunky()
+
+    def test_block_with_newlines_in_the_data(self):
+        import struct
+        values = [1.0, 2.5e-9, -3.0, struct.unpack(">f", b"\x0a\x0a\x0a\x0a")[0]]
+        data = struct.pack(">4f", *values)
+        b = self.backend(b"#2%02d" % len(data) + data + b"\n")
+        self.assertEqual(b.read_block(16, 0), data)
+        self.assertEqual(b.buf, b"")          # the terminator was read too
+        b = self.backend(b"#2%02d" % len(data) + data + b"\n+1\n")
+        b.read_block(16, 0)
+        self.assertEqual(b.buf, b"+1\n")      # nothing after it was taken
+        b = self.backend(b"#2%02d" % len(data) + data[:-1] + b"\n" + b"\n")   # data ends with the EOS byte
+        self.assertEqual(len(b.read_block(16, 0)), len(data))
+        self.assertEqual(b.buf, b"")
 
 
 if __name__ == "__main__":
